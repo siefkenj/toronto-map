@@ -1,0 +1,16 @@
+#root {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 2rem;
+    text-align: center;
+
+    --color-river-border: #0375d3;
+    --color-river-fill: #0f65bc;
+}
+
+.neighbourhood-label {
+    font-size: 6px;
+    font-family: "DejaVu Serif", "Charis SIL", serif;
+    font-weight: 400;
+    fill: #444;
+}

@@ -1,0 +1,213 @@
+{
+  "type": "FeatureCollection",
+  "generator": "overpass-turbo",
+  "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL.",
+  "timestamp": "2025-06-09T03:42:00Z",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "relation/2520672",
+        "admin_level": "8",
+        "boundary": "administrative",
+        "name": "Scarborough",
+        "note": "Former Scarborough boundary. Still used by postal addresses",
+        "type": "boundary",
+        "wikidata": "Q1025401",
+        "@geometry": "bounds"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -79.3413434,
+              43.6697234
+            ],
+            [
+              -79.1132193,
+              43.6697234
+            ],
+            [
+              -79.1132193,
+              43.8554425
+            ],
+            [
+              -79.3413434,
+              43.8554425
+            ],
+            [
+              -79.3413434,
+              43.6697234
+            ]
+          ]
+        ]
+      },
+      "id": "relation/2520672"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "relation/2520691",
+        "admin_level": "8",
+        "boundary": "administrative",
+        "name": "Etobicoke",
+        "note": "Boundary of former municipality, still used in postal addresses",
+        "type": "boundary",
+        "wikidata": "Q1020159",
+        "wikipedia": "en:Etobicoke",
+        "@geometry": "bounds"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -79.6392832,
+              43.5796082
+            ],
+            [
+              -79.4669045,
+              43.5796082
+            ],
+            [
+              -79.4669045,
+              43.7630265
+            ],
+            [
+              -79.6392832,
+              43.7630265
+            ],
+            [
+              -79.6392832,
+              43.5796082
+            ]
+          ]
+        ]
+      },
+      "id": "relation/2520691"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "relation/2989336",
+        "admin_level": "8",
+        "boundary": "administrative",
+        "name": "York",
+        "note": "Former York boundary. Still used by postal addresses",
+        "type": "boundary",
+        "wikidata": "Q520484",
+        "@geometry": "bounds"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -79.5359987,
+              43.6477379
+            ],
+            [
+              -79.4118993,
+              43.6477379
+            ],
+            [
+              -79.4118993,
+              43.7106878
+            ],
+            [
+              -79.5359987,
+              43.7106878
+            ],
+            [
+              -79.5359987,
+              43.6477379
+            ]
+          ]
+        ]
+      },
+      "id": "relation/2989336"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "relation/2989344",
+        "admin_level": "8",
+        "boundary": "administrative",
+        "name": "North York",
+        "note": "Former North York boundary. Still used by postal addresses",
+        "type": "boundary",
+        "wikidata": "Q1586510",
+        "@geometry": "bounds"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -79.585215,
+              43.6929935
+            ],
+            [
+              -79.2991645,
+              43.6929935
+            ],
+            [
+              -79.2991645,
+              43.8156447
+            ],
+            [
+              -79.585215,
+              43.8156447
+            ],
+            [
+              -79.585215,
+              43.6929935
+            ]
+          ]
+        ]
+      },
+      "id": "relation/2989344"
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "@id": "relation/2989348",
+        "admin_level": "8",
+        "boundary": "administrative",
+        "name": "East York",
+        "type": "boundary",
+        "wikidata": "Q167585",
+        "@geometry": "bounds"
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -79.3800848,
+              43.6785178
+            ],
+            [
+              -79.2877748,
+              43.6785178
+            ],
+            [
+              -79.2877748,
+              43.7217201
+            ],
+            [
+              -79.3800848,
+              43.7217201
+            ],
+            [
+              -79.3800848,
+              43.6785178
+            ]
+          ]
+        ]
+      },
+      "id": "relation/2989348"
+    }
+  ]
+}
