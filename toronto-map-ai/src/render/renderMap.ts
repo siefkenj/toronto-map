@@ -40,6 +40,9 @@ import { el, polyline, round, text, type Pt } from "./svg";
 import { pointInPolygon, simpleCenter } from "./geometry";
 import { depthContours } from "./bathymetry";
 import {
+    boxesOverlap,
+    charAdvance,
+    labelBox,
     placeLabels,
     textWidth,
     type Box,
@@ -180,6 +183,17 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     mapContent.push(transitLayer(proj));
     mapContent.push(stationsLayer(proj));
     mapContent.push(landmarkMarkers(proj));
+    // curved road labels bend along each road, avoiding the placed labels. Streets
+    // reserve first (they matter more), then highways yield to them.
+    const roadLabelKeepOut = [...keepOut, ...mapLabels.map(labelBox)];
+    const streetItems = streets.features.map((f) => ({ name: (f.properties?.name as string) ?? "", chains: mergedChainsOf(f) }));
+    // highways draw raw (all lanes), but for LABEL placement we use the merged
+    // centreline so the name has one long line to sit on instead of a stub.
+    const hwyItems = highways.features
+        .filter((f) => f.geometry?.type === "MultiLineString")
+        .map((f) => ({ name: (f.properties?.label as string) ?? "", chains: mergedChainsOf(f) }));
+    mapContent.push(curvedRoadLabels(proj, streetItems, { size: LABEL_STYLE.street.size, tracking: LABEL_STYLE.street.tracking ?? 1, fill: LABEL_STYLE.street.fill, weight: 500, italic: true }, frame as Rect, roadLabelKeepOut));
+    mapContent.push(curvedRoadLabels(proj, hwyItems, { size: 6, tracking: 0.8, fill: PALETTE.inkFaint, weight: 600, italic: false }, frame as Rect, roadLabelKeepOut));
     mapContent.push(emitLeaders(mapLabels));
     mapContent.push(emitLabels(mapLabels));
     // transit labels on top of the map labels (their boxes were reserved above)
@@ -199,7 +213,7 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     if (dropped > 0) layers.push(`<!-- ${dropped} low-priority labels dropped to avoid overlap -->`);
 
     return [
-        `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONTS.serif}">`,
+        `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="${FONTS.serif}">`,
         `<style>${FONT_FACE_CSS}</style>`,
         layers.join("\n"),
         `</svg>`,
@@ -824,6 +838,163 @@ function ferryLayer(proj: Projection): string {
 // streets + markers
 // ---------------------------------------------------------------------------
 
+// OSM arterials arrive as many disjoint ways, and divided stretches split into
+// two offset carriageways whose ends stagger and overlap — so endpoint-stitching
+// leaves a street as fragments that render with uneven width (round-cap "beads")
+// and gaps. Instead we reconstruct a single CENTRELINE per street: resample all
+// pieces to points, collapse them laterally onto a coarse grid (which merges the
+// parallel carriageways into one node per ~cell), link nearby nodes, and take the
+// longest path through each connected component. The result is one clean line per
+// contiguous run, with genuinely separate pieces kept as separate components.
+
+/** Ramer–Douglas–Peucker on metre-space points. */
+function rdpSimplify(pts: Pt[], eps: number): Pt[] {
+    if (pts.length < 3) return pts;
+    const keep = new Array(pts.length).fill(false);
+    keep[0] = keep[pts.length - 1] = true;
+    const stack: [number, number][] = [[0, pts.length - 1]];
+    while (stack.length) {
+        const [i, j] = stack.pop()!;
+        const a = pts[i], b = pts[j];
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const nrm = Math.hypot(dx, dy) || 1e-9;
+        let dmax = 0, idx = -1;
+        for (let k = i + 1; k < j; k++) {
+            const d = Math.abs((pts[k][0] - a[0]) * dy - (pts[k][1] - a[1]) * dx) / nrm;
+            if (d > dmax) { dmax = d; idx = k; }
+        }
+        if (dmax > eps && idx >= 0) { keep[idx] = true; stack.push([i, idx], [idx, j]); }
+    }
+    return pts.filter((_, k) => keep[k]);
+}
+
+/** Arc-length moving average: attenuates the high-frequency grid scatter of a
+ *  reconstructed centreline while preserving its large-scale curves. Endpoints
+ *  are pinned so the line still meets its true termini. */
+function smoothPath(pts: Pt[], windowM: number): Pt[] {
+    const n = pts.length;
+    if (n < 3) return pts;
+    const cum = [0];
+    for (let i = 1; i < n; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+    const out: Pt[] = [pts[0]];
+    for (let i = 1; i < n - 1; i++) {
+        let sx = 0, sy = 0, sw = 0;
+        for (let j = 0; j < n; j++) {
+            const d = Math.abs(cum[j] - cum[i]);
+            if (d > windowM) continue;
+            const w = 1 - d / windowM; // triangular weight
+            sx += pts[j][0] * w; sy += pts[j][1] * w; sw += w;
+        }
+        out.push(sw > 0 ? [sx / sw, sy / sw] : pts[i]);
+    }
+    out.push(pts[n - 1]);
+    return out;
+}
+
+/** Reconstruct clean centrelines from a street's many raw pieces. */
+function centrelineChains(rawll: LonLatTuple[][], stepM = 12, cellM = 46, maxLinkM = 460): LonLatTuple[][] {
+    const chains = rawll.filter((c) => c.length >= 2);
+    if (chains.length === 0) return [];
+    const lat0 = chains[0][0][1];
+    const kx = Math.cos((lat0 * Math.PI) / 180) * 111320, ky = 111320;
+    // 1. resample every stepM metres
+    const pts: Pt[] = [];
+    for (const c of chains) {
+        const mc = c.map((p): Pt => [p[0] * kx, p[1] * ky]);
+        for (let i = 1; i < mc.length; i++) {
+            const a = mc[i - 1], b = mc[i];
+            const d = Math.hypot(b[0] - a[0], b[1] - a[1]);
+            const n = Math.max(1, Math.floor(d / stepM));
+            for (let t = 0; t <= n; t++) pts.push([a[0] + ((b[0] - a[0]) * t) / n, a[1] + ((b[1] - a[1]) * t) / n]);
+        }
+    }
+    // 2. one node per occupied grid cell (collapses lateral carriageways)
+    const cells = new Map<string, { x: number; y: number; n: number }>();
+    for (const [x, y] of pts) {
+        const k = Math.floor(x / cellM) + "," + Math.floor(y / cellM);
+        let o = cells.get(k);
+        if (!o) { o = { x: 0, y: 0, n: 0 }; cells.set(k, o); }
+        o.x += x; o.y += y; o.n++;
+    }
+    const nodes: Pt[] = [...cells.values()].map((o) => [o.x / o.n, o.y / o.n]);
+    const N = nodes.length;
+    if (N < 2) return [];
+    // 3. link nodes within maxLinkM, using a grid index so it stays near-linear
+    const ml2 = maxLinkM * maxLinkM;
+    const gi = new Map<string, number[]>();
+    for (let i = 0; i < N; i++) {
+        const k = Math.floor(nodes[i][0] / maxLinkM) + "," + Math.floor(nodes[i][1] / maxLinkM);
+        let a = gi.get(k); if (!a) { a = []; gi.set(k, a); } a.push(i);
+    }
+    const adj: Array<Array<[number, number]>> = Array.from({ length: N }, () => []);
+    for (let i = 0; i < N; i++) {
+        const gx = Math.floor(nodes[i][0] / maxLinkM), gy = Math.floor(nodes[i][1] / maxLinkM);
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+            const arr = gi.get((gx + dx) + "," + (gy + dy)); if (!arr) continue;
+            for (const j of arr) {
+                if (j <= i) continue;
+                const d2 = (nodes[i][0] - nodes[j][0]) ** 2 + (nodes[i][1] - nodes[j][1]) ** 2;
+                if (d2 <= ml2) { const d = Math.sqrt(d2); adj[i].push([d, j]); adj[j].push([d, i]); }
+            }
+        }
+    }
+    // 4. per component: Prim MST, then its weighted-longest path (diameter)
+    const seen = new Array(N).fill(false);
+    const out: LonLatTuple[][] = [];
+    for (let s = 0; s < N; s++) {
+        if (seen[s]) continue;
+        seen[s] = true;
+        const mst = new Map<number, Array<[number, number]>>();
+        const link = (a: number, b: number, w: number) => { (mst.get(a) ?? mst.set(a, []).get(a)!).push([b, w]); };
+        const heap: Array<[number, number, number]> = [];
+        const push = (t: [number, number, number]) => { heap.push(t); let i = heap.length - 1; while (i > 0) { const p = (i - 1) >> 1; if (heap[p][0] <= heap[i][0]) break; [heap[p], heap[i]] = [heap[i], heap[p]]; i = p; } };
+        const pop = (): [number, number, number] => { const top = heap[0]; const last = heap.pop()!; if (heap.length) { heap[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = 2 * i + 2; let m = i; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === i) break;[heap[m], heap[i]] = [heap[i], heap[m]]; i = m; } } return top; };
+        const comp = [s];
+        for (const [d, j] of adj[s]) push([d, s, j]);
+        while (heap.length) {
+            const [d, a, b] = pop();
+            if (seen[b]) continue;
+            seen[b] = true; comp.push(b); link(a, b, d); link(b, a, d);
+            for (const [d2, c] of adj[b]) if (!seen[c]) push([d2, b, c]);
+        }
+        if (comp.length < 2) continue;
+        const farthest = (src: number): { f: number; par: Map<number, number | null> } => {
+            const dist = new Map<number, number>([[src, 0]]);
+            const par = new Map<number, number | null>([[src, null]]);
+            const stack = [src];
+            while (stack.length) {
+                const u = stack.pop()!;
+                for (const [v, w] of mst.get(u) ?? []) if (!dist.has(v)) { dist.set(v, dist.get(u)! + w); par.set(v, u); stack.push(v); }
+            }
+            let f = src, fd = -1;
+            for (const [k, dv] of dist) if (dv > fd) { fd = dv; f = k; }
+            return { f, par };
+        };
+        const a = farthest(s).f;
+        const { f: b, par } = farthest(a);
+        const path: number[] = [];
+        for (let cur: number | null = b; cur !== null; cur = par.get(cur) ?? null) path.push(cur);
+        const smooth = smoothPath(path.map((i) => nodes[i]), 110);
+        const simp = rdpSimplify(smooth, 5);
+        out.push(simp.map((p): LonLatTuple => [Math.round((p[0] / kx) * 1e6) / 1e6, Math.round((p[1] / ky) * 1e6) / 1e6]));
+    }
+    return out;
+}
+
+const mergedChainsCache = new Map<Feature, LonLatTuple[][]>();
+/** Reconstructed centreline(s) for a road feature, computed once. */
+function mergedChainsOf(f: Feature): LonLatTuple[][] {
+    let c = mergedChainsCache.get(f);
+    if (!c) {
+        const raw = f.geometry?.type === "MultiLineString"
+            ? (f.geometry.coordinates as Position[][]).map((l) => l.map((p) => p as LonLatTuple))
+            : [];
+        c = centrelineChains(raw);
+        mergedChainsCache.set(f, c);
+    }
+    return c;
+}
+
 function streetsLayer(proj: Projection): string {
     // Draw every casing (pale underlay) first, then every ink line on top, so
     // that adjacent segments of a road join cleanly instead of a later segment's
@@ -832,8 +1003,8 @@ function streetsLayer(proj: Projection): string {
     const inks: string[] = [];
     for (const f of streets.features) {
         if (f.geometry?.type !== "MultiLineString") continue;
-        for (const line of f.geometry.coordinates) {
-            const d = polyline(line.map((p) => proj.project(p as LonLatTuple)));
+        for (const line of mergedChainsOf(f)) {
+            const d = polyline(line.map((p) => proj.project(p)));
             casings.push(
                 el("path", {
                     d,
@@ -875,6 +1046,7 @@ function highwaysLayer(proj: Projection): string {
     const ink: string[] = [];
     for (const f of highways.features) {
         if (f.geometry?.type !== "MultiLineString") continue;
+        // Highways are drawn RAW (every carriageway/lane), never merged.
         for (const line of f.geometry.coordinates) {
             const d = polyline(line.map((p) => proj.project(p as LonLatTuple)));
             cas.push(el("path", { d, fill: "none", stroke: PALETTE.paper, "stroke-width": 2.4, "stroke-linecap": "round", "stroke-linejoin": "round" }));
@@ -1049,57 +1221,12 @@ function collectLabelInputs(proj: Projection, eastVec: Pt): LabelInput[] {
         });
     }
 
-    // street spines (rotated, along the longest polyline)
-    for (const f of streets.features) {
-        const line = longestLine(f);
-        if (!line || line.length < 2) continue;
-        const mid = Math.floor(line.length / 2);
-        const a = proj.project(line[Math.max(0, mid - 1)] as LonLatTuple);
-        const b = proj.project(line[Math.min(line.length - 1, mid)] as LonLatTuple);
-        const p = proj.project(line[mid] as LonLatTuple);
-        let ang = angleDeg(unit([b[0] - a[0], b[1] - a[1]]));
-        if (ang > 90) ang -= 180;
-        if (ang < -90) ang += 180;
-        const name = ((f.properties?.name as string) ?? "").toUpperCase();
-        inputs.push(areaLabel(`st:${name}`, name, [p[0], p[1] - 3], {
-            size: S.street.size,
-            tracking: S.street.tracking,
-            fill: S.street.fill,
-            family: FONTS.serif,
-            italic: true,
-            weight: 500,
-            rotate: ang,
-            priority: PRIO.street,
-            halo: PALETTE.paper,
-            haloWidth: 3,
-        }));
-    }
+    // street spines are labelled separately as curved text-on-path so the name
+    // bends with the road (see curvedStreetLabels); they are not fed to the
+    // straight-box engine here.
 
-    // highway shields — small, faint, low priority so they yield to real labels
-    for (const f of highways.features) {
-        const line = longestLine(f);
-        if (!line || line.length < 2) continue;
-        const mid = Math.floor(line.length / 2);
-        const a = proj.project(line[Math.max(0, mid - 1)] as LonLatTuple);
-        const b = proj.project(line[Math.min(line.length - 1, mid)] as LonLatTuple);
-        const p = proj.project(line[mid] as LonLatTuple);
-        let ang = angleDeg(unit([b[0] - a[0], b[1] - a[1]]));
-        if (ang > 90) ang -= 180;
-        if (ang < -90) ang += 180;
-        const label = ((f.properties?.label as string) ?? "").toUpperCase();
-        inputs.push(areaLabel(`hwy:${f.properties?.ref}`, label, [p[0], p[1] - 3], {
-            size: 6,
-            tracking: 0.8,
-            fill: PALETTE.inkFaint,
-            family: FONTS.serif,
-            weight: 600,
-            rotate: ang,
-            priority: PRIO.highway,
-            allowDrop: true,
-            halo: PALETTE.paper,
-            haloWidth: 2.6,
-        }));
-    }
+    // highways are labelled as curved text-on-path too (see curvedRoadLabels),
+    // not through the straight-box engine.
 
     // municipalities are laid out separately (see layoutMunicipalities) so their
     // names stay tied to their arrows and don't overlap.
@@ -1181,11 +1308,10 @@ function emitLeaders(placed: PlacedLabel[]): string {
     return el("g", {}, out.join(""));
 }
 
-function longestLine(f: Feature): Position[] | null {
-    if (f.geometry?.type !== "MultiLineString") return null;
+function longestOf(chains: LonLatTuple[][] | Position[][]): Position[] | null {
     let best: Position[] | null = null;
     let bestLen = 0;
-    for (const line of f.geometry.coordinates) {
+    for (const line of chains) {
         let len = 0;
         for (let i = 1; i < line.length; i++)
             len += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
@@ -1195,6 +1321,201 @@ function longestLine(f: Feature): Position[] | null {
         }
     }
     return best;
+}
+/** Point at arc-length `d` along a projected polyline with cumulative lengths. */
+function pointAtArc(pts: Pt[], cum: number[], d: number): Pt {
+    if (d <= 0) return pts[0];
+    if (d >= cum[cum.length - 1]) return pts[pts.length - 1];
+    let i = 1;
+    while (i < cum.length && cum[i] < d) i++;
+    const t = (d - cum[i - 1]) / (cum[i] - cum[i - 1] || 1);
+    return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * t, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * t];
+}
+
+/** Sub-polyline of a projected line between two arc-lengths (inclusive ends). */
+function subPolyline(pts: Pt[], cum: number[], dS: number, dE: number): Pt[] {
+    const out: Pt[] = [pointAtArc(pts, cum, dS)];
+    for (let i = 0; i < pts.length; i++) if (cum[i] > dS && cum[i] < dE) out.push(pts[i]);
+    out.push(pointAtArc(pts, cum, dE));
+    return out;
+}
+
+/**
+ * Street names as curved text bent along the road centreline. Following the
+ * road (rather than a single straight baseline over a curving street) keeps the
+ * name off the line's awkward crossings; a paper halo knocks the road out from
+ * under the glyphs. Each label finds the straightest, most central window that
+ * clears already-placed labels.
+ */
+interface CurvedLabelStyle { size: number; tracking: number; fill: string; weight: number | string; italic: boolean; }
+
+/**
+ * Road names as curved text bent along the centreline. Following the road (not a
+ * single straight baseline over a curving street) keeps the name off the line's
+ * awkward crossings; the baseline is pushed slightly off the centreline so the
+ * glyphs + paper glow clear the road. `occupied` is mutated so successive calls
+ * (streets, then highways) don't collide. Used for streets AND highways so the
+ * curved treatment is uniform across every road.
+ */
+function curvedRoadLabels(
+    proj: Projection,
+    items: { name: string; chains: LonLatTuple[][] }[],
+    style: CurvedLabelStyle,
+    frame: Rect,
+    occupied: Box[]
+): string {
+    const inFrame = (x: number, y: number) => x >= frame.x && x <= frame.x + frame.w && y >= frame.y && y <= frame.y + frame.h;
+    const { size, tracking, fill, weight, italic } = style;
+    // perpendicular baseline offset so glyph + glow clear the road line
+    const off = size * (1.15 / 3);
+    const texts: string[] = [];
+    // longest roads first, so trunk roads win the good positions
+    const feats = items
+        .map((it) => ({ it, line: longestOf(it.chains) }))
+        .filter((o) => o.line && o.line.length >= 2)
+        .sort((a, b) => (b.line!.length) - (a.line!.length));
+    for (const { it, line } of feats) {
+        const name = it.name.toUpperCase();
+        if (!name) continue;
+        const pts = (line as LonLatTuple[]).map((p) => proj.project(p));
+        const cum = [0];
+        for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+        const L = cum[cum.length - 1];
+        const w = textWidth(name, size, tracking);
+        const need = w + 6;
+        if (L < need + 4) continue;
+        // Search windows from the road's middle outward. Prefer the flattest spot
+        // (lowest curvature); if none is straight enough, fall back to the least
+        // curved found and rely on adaptive kerning below to stop overlaps.
+        const half = need / 2;
+        const stepC = Math.max(12, w * 0.3);
+        const devOf = (wp: Pt[]): number => {
+            const ex = wp[wp.length - 1][0] - wp[0][0], ey = wp[wp.length - 1][1] - wp[0][1];
+            const c2 = ex * ex + ey * ey || 1;
+            let dev = 0;
+            for (const p of wp) {
+                const t = ((p[0] - wp[0][0]) * ex + (p[1] - wp[0][1]) * ey) / c2;
+                dev = Math.max(dev, Math.hypot(p[0] - (wp[0][0] + t * ex), p[1] - (wp[0][1] + t * ey)));
+            }
+            return dev;
+        };
+        type Cand = { dS: number; dE: number; rev: boolean; boxes: Box[]; dev: number };
+        let chosen: Cand | null = null;
+        let fallback: Cand | null = null;
+        outer:
+        for (let d0 = 0; d0 <= L / 2 + stepC; d0 += stepC) {
+            for (const c of d0 === 0 ? [L / 2] : [L / 2 - d0, L / 2 + d0]) {
+                const dS = c - half, dE = c + half;
+                if (dS < 3 || dE > L - 3) continue;
+                const wp = subPolyline(pts, cum, dS, dE);
+                const dev = devOf(wp);
+                const rev = wp[wp.length - 1][0] - wp[0][0] < 0;
+                // collision boxes on the offset side; also require them inside frame
+                const boxes: Box[] = [];
+                let ok = true;
+                const nB = Math.max(2, Math.ceil((dE - dS) / (size * 0.9)));
+                for (let k = 0; k <= nB && ok; k++) {
+                    const a = dS + ((dE - dS) * k) / nB;
+                    const [x, y] = pointAtArc(pts, cum, a);
+                    const [ax, ay] = pointAtArc(pts, cum, Math.max(0, a - 1));
+                    const [bx, by] = pointAtArc(pts, cum, Math.min(L, a + 1));
+                    let [tx, ty] = unit([bx - ax, by - ay]);
+                    if (rev) { tx = -tx; ty = -ty; }
+                    const ox = x + ty * off, oy = y - tx * off;
+                    if (!inFrame(ox, oy)) { ok = false; break; }
+                    boxes.push({ x0: ox - size * 0.6, y0: oy - size * 0.7, x1: ox + size * 0.6, y1: oy + size * 0.7 });
+                }
+                if (!ok || boxes.some((b) => occupied.some((o) => boxesOverlap(b, o)))) continue;
+                const cand: Cand = { dS, dE, rev, boxes, dev };
+                if (!fallback || dev < fallback.dev) fallback = cand;
+                if (dev <= size * 0.5) { chosen = cand; break outer; } // genuinely flat — done
+            }
+        }
+        // A genuinely flat window → straight text; otherwise take the least-curved
+        // spot and bend + kern the glyphs onto it.
+        const straightMode = !!chosen;
+        if (!chosen) chosen = fallback;
+        if (!chosen) continue;
+        occupied.push(...chosen.boxes);
+        const chars = [...name];
+        const advances = chars.map((c) => charAdvance(c) * size);
+        const wordLen = advances.reduce((s, a) => s + a, 0) + tracking * (chars.length - 1);
+
+        if (straightMode) {
+            // low curvature: straight baseline along the window chord, so gentle
+            // wiggles in the centreline don't wobble the text (e.g. Eglinton Ave.)
+            const [sx, sy] = pointAtArc(pts, cum, chosen.dS);
+            const [ex, ey] = pointAtArc(pts, cum, chosen.dE);
+            let [dx, dy] = unit([ex - sx, ey - sy]);
+            if (dx < 0) { dx = -dx; dy = -dy; }
+            const ang = angleDeg([dx, dy]);
+            const nx = dy, ny = -dx; // "up" normal
+            const [mx, my] = pointAtArc(pts, cum, (chosen.dS + chosen.dE) / 2);
+            let c = -wordLen / 2;
+            for (let i = 0; i < chars.length; i++) {
+                const cc = c + advances[i] / 2;
+                if (chars[i] !== " ")
+                    texts.push(text(mx + dx * cc + nx * off, my + dy * cc + ny * off, chars[i], {
+                        size, fill, family: FONTS.serif, italic, weight,
+                        anchor: "middle", rotate: ang, halo: PALETTE.paper, haloId: "haloPaper",
+                    }));
+                c += advances[i] + tracking;
+            }
+            continue;
+        }
+
+        // curved placement: window extended so kerning has room to spread the word
+        const ext = need * 0.7;
+        let wp = subPolyline(pts, cum, Math.max(0, chosen.dS - ext), Math.min(L, chosen.dE + ext));
+        if (chosen.rev) wp = wp.slice().reverse();
+        const wcum = [0];
+        for (let i = 1; i < wp.length; i++) wcum.push(wcum[i - 1] + Math.hypot(wp[i][0] - wp[i - 1][0], wp[i][1] - wp[i - 1][1]));
+        const WL = wcum[wcum.length - 1];
+        // tangent smoothed over ~half a glyph so a single centreline vertex can't
+        // spike the angle (used for both rotation and kerning)
+        const DA = size * 0.6;
+        const angAt = (a: number): number => {
+            const [ax, ay] = pointAtArc(wp, wcum, Math.max(0, a - DA));
+            const [bx, by] = pointAtArc(wp, wcum, Math.min(WL, a + DA));
+            return Math.atan2(by - ay, bx - ax);
+        };
+        // Curvature-adaptive kerning: where the road bends toward the text side
+        // (concave) the glyph tops converge, so widen the gap there by the arc the
+        // bend eats up over the glyph height — letters never overlap on a bend.
+        const H = off + size * 0.78;
+        const baseCentres: number[] = [];
+        let acc0 = 0;
+        for (let i = 0; i < chars.length; i++) { baseCentres.push(acc0 + advances[i] / 2); acc0 += advances[i] + tracking; }
+        const extras = new Array(chars.length).fill(0);
+        for (let i = 0; i < chars.length - 1; i++) {
+            let dth = angAt(baseCentres[i + 1]) - angAt(baseCentres[i]);
+            while (dth > Math.PI) dth -= 2 * Math.PI;
+            while (dth < -Math.PI) dth += 2 * Math.PI;
+            const thm = angAt((baseCentres[i] + baseCentres[i + 1]) / 2);
+            const nx = Math.sin(thm), ny = -Math.cos(thm); // "up" normal (text side)
+            const dTx = Math.cos(angAt(baseCentres[i + 1])) - Math.cos(angAt(baseCentres[i]));
+            const dTy = Math.sin(angAt(baseCentres[i + 1])) - Math.sin(angAt(baseCentres[i]));
+            if (dTx * nx + dTy * ny > 0) extras[i] = Math.min(size * 1.6, H * Math.abs(dth)); // concave → widen
+        }
+        const total = wordLen + extras.reduce((s, a) => s + a, 0);
+        let d = (WL - total) / 2;
+        for (let i = 0; i < chars.length; i++) {
+            const mid = d + advances[i] / 2;
+            const [cx, cy] = pointAtArc(wp, wcum, mid);
+            const th = angAt(mid);
+            const tx = Math.cos(th), ty = Math.sin(th);
+            // baseline pushed off the centreline along the glyph's "up" normal
+            const gx = cx + ty * off;
+            const gy = cy - tx * off;
+            if (chars[i] !== " ")
+                texts.push(text(gx, gy, chars[i], {
+                    size, fill, family: FONTS.serif, italic, weight,
+                    anchor: "middle", rotate: angleDeg([tx, ty]), halo: PALETTE.paper, haloId: "haloPaper",
+                }));
+            d += advances[i] + tracking + extras[i];
+        }
+    }
+    return el("g", {}, texts.join(""));
 }
 
 // ---------------------------------------------------------------------------

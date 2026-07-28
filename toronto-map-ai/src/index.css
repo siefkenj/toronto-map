@@ -40,10 +40,16 @@ body {
     flex: 1 1 auto;
     min-height: 0;
     background: #3a342b;
+    /* Claim every touch gesture over the map. Without this the browser treats a
+       drag as a scroll and a pinch as page zoom, and stops delivering the
+       touchmove events our gesture handler needs. */
+    touch-action: none;
+    overscroll-behavior: none;
 }
 
 .map-holder svg {
     width: 100%;
     height: 100%;
     display: block;
+    touch-action: none;
 }

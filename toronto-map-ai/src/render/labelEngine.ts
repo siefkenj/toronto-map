@@ -52,7 +52,7 @@ export interface Rect {
 
 const PAD = 1.9;
 
-function charAdvance(ch: string): number {
+export function charAdvance(ch: string): number {
     if (" .,:;'!|il".includes(ch)) return 0.28;
     if ("fjrt()[]-I".includes(ch)) return 0.34;
     if ("mwMW".includes(ch)) return 0.86;
@@ -99,8 +99,19 @@ function rotatedAABB(b: Box, cx: number, cy: number, deg: number): Box {
     return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
 }
 
-function overlaps(a: Box, b: Box): boolean {
+export function boxesOverlap(a: Box, b: Box): boolean {
     return !(a.x1 <= b.x0 || a.x0 >= b.x1 || a.y1 <= b.y0 || a.y0 >= b.y1);
+}
+function overlaps(a: Box, b: Box): boolean {
+    return boxesOverlap(a, b);
+}
+
+/** Screen-space AABB actually occupied by an already-placed label. */
+export function labelBox(p: PlacedLabel): Box {
+    const w = textWidth(p.text, p.size, p.tracking);
+    let box = boxAt(p.x, p.y, w, p.size, p.finalAnchor);
+    if (p.rotate) box = rotatedAABB(box, p.x, p.y, p.rotate);
+    return box;
 }
 
 function insideFrame(b: Box, f: Rect): boolean {

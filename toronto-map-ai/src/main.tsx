@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import svgPanZoom from "svg-pan-zoom";
 import "./index.css";
 import { renderTorontoMap, defaultViewAnchor } from "./render/renderMap";
+import { createTouchGestureHandler } from "./touchGestures";
 
 // Render the self-contained SVG once (data + fonts are all embedded).
 const svgMarkup = renderTorontoMap({inset: {width: 560}});
@@ -32,6 +33,9 @@ function App() {
             minZoom: 0.02,
             maxZoom: 300,
             zoomScaleSensitivity: 0.4,
+            // svg-pan-zoom's own touch handling is single-finger only (no
+            // pinch); this replaces it. See ./touchGestures.
+            customEventsHandler: createTouchGestureHandler(),
         });
 
         // The flex container often has zero size on the first paint, which makes
@@ -72,7 +76,7 @@ function App() {
         <div className="app">
             <header className="titlebar">
                 City of Toronto — Historic Map
-                <span className="hint">scroll to zoom · drag to pan · double-click to zoom in</span>
+                <span className="hint">scroll or pinch to zoom · drag to pan · double-click to zoom in</span>
             </header>
             <div
                 className="map-holder"
