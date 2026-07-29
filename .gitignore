@@ -7,6 +7,14 @@ dist-lib/
 dist-ssr/
 *.tsbuildinfo
 
+# Generated at build time by scripts/prerender-tiles.ts.
+# Leading **/ so this matches inside the packages, not just at the repo root —
+# a pattern with an interior slash is anchored to the .gitignore's own directory.
+**/public/tiles/
+
+# wireit's incremental-build cache
+.wireit/
+
 # Logs
 logs/
 *.log

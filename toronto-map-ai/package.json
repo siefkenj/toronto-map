@@ -4,23 +4,90 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "build:lib": "tsc -b && vite build --config vite.lib.config.ts",
-    "typecheck": "tsc -b",
+    "dev": "echo use npm run dev:nobuild to skip the building step && npm run prerender && vite",
+    "dev:nobuild": "vite",
+    "build": "wireit",
+    "build:lib": "wireit",
+    "prerender": "wireit",
+    "typecheck": "wireit",
     "preview": "vite preview"
+  },
+  "wireit": {
+    "typecheck": {
+      "command": "tsc -b",
+      "files": [
+        "src/**/*.{ts,tsx}",
+        "scripts/**/*.ts",
+        "tsconfig*.json",
+        "vite.config.ts",
+        "vite.lib.config.ts"
+      ],
+      "output": []
+    },
+    "build:lib": {
+      "command": "vite build --config vite.lib.config.ts",
+      "//": "Files are only what the library entry actually pulls in, and typecheck is deliberately NOT a dependency. wireit folds a dependency's cache key into its dependents, so putting the all-of-src typecheck upstream of this would make every viewer-side edit re-render the whole tile pyramid. `build` still gates on typecheck.",
+      "files": [
+        "src/index.ts",
+        "src/render/**",
+        "src/assets/**",
+        "vite.lib.config.ts",
+        "tsconfig*.json"
+      ],
+      "output": [
+        "dist-lib/**"
+      ]
+    },
+    "prerender": {
+      "command": "node scripts/prerender-tiles.ts",
+      "dependencies": [
+        "build:lib"
+      ],
+      "files": [
+        "scripts/prerender-tiles.ts",
+        "src/tilePyramid.ts",
+        "dist-lib/toronto-map-ai.js"
+      ],
+      "output": [
+        "public/tiles/**"
+      ]
+    },
+    "build": {
+      "command": "vite build",
+      "dependencies": [
+        "typecheck",
+        "prerender"
+      ],
+      "files": [
+        "src/**",
+        "public/**",
+        "index.html",
+        "vite.config.ts",
+        "tsconfig*.json"
+      ],
+      "output": [
+        "dist/**"
+      ]
+    }
   },
   "dependencies": {
     "@types/geojson": "^7946.0.16",
+    "leaflet": "^1.9.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
+    "react-router": "^8.3.0",
     "svg-pan-zoom": "^3.6.2"
   },
   "devDependencies": {
+    "@types/leaflet": "^1.9.21",
+    "@types/node": "^24.13.3",
     "@types/react": "^19.1.2",
     "@types/react-dom": "^19.1.2",
     "@vitejs/plugin-react": "^4.4.1",
+    "playwright": "^1.62.0",
+    "sharp": "^0.35.3",
     "typescript": "~5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "wireit": "^0.14.13"
   }
 }

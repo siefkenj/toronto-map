@@ -23,6 +23,10 @@ export const PALETTE = {
     // island landmass — kept close to the Old Toronto wash so the islands read as land
     island: "#dccdaa",
 
+    // sandy beaches (warmer/paler than the island wash so they read as sand)
+    beach: "#e7d7ac",
+    beachEdge: "#c2ac7c",
+
     // parks (muted antique green) and their outline
     park: "#c3cca2",
     parkEdge: "#8b9760",

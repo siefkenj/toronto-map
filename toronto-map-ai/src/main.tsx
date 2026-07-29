@@ -1,95 +1,56 @@
-import { StrictMode, useEffect, useRef } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
-import svgPanZoom from "svg-pan-zoom";
+import { HashRouter, Navigate, Route, Routes } from "react-router";
 import "./index.css";
-import { renderTorontoMap, defaultViewAnchor } from "./render/renderMap";
-import { createTouchGestureHandler } from "./touchGestures";
 
-// Render the self-contained SVG once (data + fonts are all embedded).
-const svgMarkup = renderTorontoMap({inset: {width: 560}});
+// Hash routing, not history routing: the build is relocatable (base "./"), so
+// it has to work from a project-pages subpath, a custom domain or file:// alike,
+// with no server-side rewrite rules available on GitHub Pages.
+//
+// Both routes are lazy so that neither pays for the other. That matters in one
+// direction especially: the live renderer bundles ~6 MB of geojson, and
+// /pre-rendered must never download it.
+const DevMap = lazy(() => import("./routes/DevMap"));
+const PreRendered = lazy(() => import("./routes/PreRendered"));
 
-function App() {
-    const holderRef = useRef<HTMLDivElement>(null);
-
-    useEffect(() => {
-        const holder = holderRef.current;
-        const svg = holder?.querySelector<SVGSVGElement>("svg");
-        if (!holder || !svg) return;
-
-        // Fill the container; svg-pan-zoom drives the viewBox transform.
-        svg.setAttribute("width", "100%");
-        svg.setAttribute("height", "100%");
-
-        const instance = svgPanZoom(svg, {
-            zoomEnabled: true,
-            panEnabled: true,
-            controlIconsEnabled: true,
-            dblClickZoomEnabled: true,
-            mouseWheelZoomEnabled: true,
-            preventMouseEventsDefault: true,
-            fit: true,
-            center: true,
-            // wide range so you can zoom way out to the whole poster AND way in
-            minZoom: 0.02,
-            maxZoom: 300,
-            zoomScaleSensitivity: 0.4,
-            // svg-pan-zoom's own touch handling is single-finger only (no
-            // pinch); this replaces it. See ./touchGestures.
-            customEventsHandler: createTouchGestureHandler(),
-        });
-
-        // The flex container often has zero size on the first paint, which makes
-        // the initial fit tiny ("zoomed way out"). Fit exactly once, as soon as the
-        // holder actually has a size; on later resizes just update the viewport so
-        // the user's current zoom/pan is preserved.
-        let fitted = false;
-        const onSize = () => {
-            instance.resize();
-            const { width, height } = holder.getBoundingClientRect();
-            if (!fitted && width > 0 && height > 0) {
-                instance.fit();
-                instance.center();
-                // Open zoomed in on the downtown core (rather than the geometric
-                // centre of the poster, which is empty north-Toronto suburbia).
-                const base = instance.getZoom();
-                instance.zoom(base * 5);
-                const sizes = instance.getSizes();
-                const rz = sizes.realZoom;
-                const a = defaultViewAnchor();
-                instance.pan({
-                    x: sizes.width / 2 - a.x * rz,
-                    y: sizes.height / 2 - a.y * rz,
-                });
-                fitted = true;
-            }
-        };
-        const ro = new ResizeObserver(onSize);
-        ro.observe(holder);
-
-        return () => {
-            ro.disconnect();
-            instance.destroy();
-        };
-    }, []);
-
+/**
+ * Loopback hosts, where the map is being worked on rather than looked at.
+ * Covers the IPv4/IPv6 spellings and the reserved `.localhost` suffix, since
+ * those are the same machine by another name.
+ */
+function isLocalhost(): boolean {
+    const host = window.location.hostname;
     return (
-        <div className="app">
-            <header className="titlebar">
-                City of Toronto — Historic Map
-                <span className="hint">scroll or pinch to zoom · drag to pan · double-click to zoom in</span>
-            </header>
-            <div
-                className="map-holder"
-                ref={holderRef}
-                // The renderer returns a self-contained SVG string; inject it as-is.
-                dangerouslySetInnerHTML={{ __html: svgMarkup }}
-            />
-        </div>
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "[::1]" ||
+        host === "::1" ||
+        host.endsWith(".localhost")
     );
 }
 
+/**
+ * Where `/` lands.
+ *
+ * Deployed, that is the cheap pre-rendered view — most visitors are on a phone
+ * and should not be handed a 3.5 MB bundle. Served from localhost it is the
+ * live renderer instead, because that is the one being developed against and
+ * the tiles are generated from it. Both remain reachable by their own path
+ * either way.
+ */
+const DEFAULT_ROUTE = isLocalhost() ? "/svg" : "/pre-rendered";
+
 createRoot(document.getElementById("root")!).render(
     <StrictMode>
-        <App />
-    </StrictMode>
+        <HashRouter>
+            <Suspense fallback={<div className="route-loading">Loading map…</div>}>
+                <Routes>
+                    <Route path="/" element={<Navigate to={DEFAULT_ROUTE} replace />} />
+                    <Route path="/svg" element={<DevMap />} />
+                    <Route path="/pre-rendered" element={<PreRendered />} />
+                    <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />
+                </Routes>
+            </Suspense>
+        </HashRouter>
+    </StrictMode>,
 );

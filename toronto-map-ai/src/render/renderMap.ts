@@ -20,6 +20,10 @@ import transitRaw from "../assets/toronto-transit.geojson.json";
 import highwaysRaw from "../assets/toronto-highways.geojson.json";
 import stationsRaw from "../assets/toronto-stations.geojson.json";
 import highParkRaw from "../assets/toronto-highpark.geojson.json";
+import bigParksRaw from "../assets/toronto-parks.geojson.json";
+import beachesRaw from "../assets/toronto-beaches.geojson.json";
+import waterwaysRaw from "../assets/toronto-waterways.geojson.json";
+import islandParksRaw from "../assets/toronto-island-parks.geojson.json";
 
 import {
     FERRY_ROUTES,
@@ -64,6 +68,10 @@ const transit = transitRaw as unknown as FeatureCollection;
 const highways = highwaysRaw as unknown as FeatureCollection;
 const stations = stationsRaw as unknown as FeatureCollection;
 const highPark = highParkRaw as unknown as FeatureCollection;
+const bigParks = bigParksRaw as unknown as FeatureCollection;
+const beaches = beachesRaw as unknown as FeatureCollection;
+const waterways = waterwaysRaw as unknown as FeatureCollection;
+const islandParks = islandParksRaw as unknown as FeatureCollection;
 
 /** Colours for the rapid-transit lines (muted to sit on the sepia palette). */
 const TRANSIT_STYLE: Record<string, { color: string; dash?: string; label: string }> = {
@@ -174,8 +182,16 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     const mapContent: string[] = [];
     mapContent.push(regionsAndNeighbourhoods(proj));
     mapContent.push(waterLayer(proj, eastVec));
+    // islands (sand landmass) sit under the parks so island parks (e.g. Toronto
+    // Island) show as green over the sand; beaches then re-expose sand at the
+    // shore, and waterways (rivers/ravine creeks) draw on top of the park green.
     mapContent.push(islandsLayer(proj));
+    mapContent.push(bigParksLayer(proj));
     mapContent.push(highParkLayer(proj));
+    // after the citywide parks, so the islands' own park/non-park shading wins
+    mapContent.push(islandParksLayer(proj));
+    mapContent.push(beachesLayer(proj));
+    mapContent.push(waterwaysLayer(proj));
     mapContent.push(airportLayer(proj));
     mapContent.push(ferryLayer(proj));
     mapContent.push(highwaysLayer(proj));
@@ -443,31 +459,36 @@ function waterLayer(proj: Projection, _eastVec: Pt): string {
             "stroke-linecap": "round",
         })
     );
-    // rivers / creeks (high-res). Port Lands water is assembled from many abutting
-    // OSM polygons; stroking each one draws internal borders that crosscut the Don
-    // River mouth. Draw those fill-only (no stroke) so the channel reads as one
-    // continuous stream; keep a thin outline on ordinary rivers/creeks.
-    const rivers: string[] = [];
-    for (const f of water.features) {
-        const w = f.properties?.water as string | undefined;
-        if (w === "river" || w === "canal") {
-            const d = geomPathD(f.geometry, proj);
-            if (!d) continue;
-            const portlands = (f.properties as Record<string, unknown>)?.portlands === true;
-            rivers.push(
+    return el("g", {}, parts.join("\n"));
+}
+
+/** Rivers / creeks (high-res), drawn as their own overlay so waterways sit on
+ *  top of the parks/ravine green they run through (Don, Humber, creeks, the
+ *  Port Lands channels) instead of being buried under it.
+ *
+ *  The source OSM riverbanks are hundreds of abutting polygons; stroking each
+ *  one draws internal seams that crosscut the channel. The asset is pre-dissolved
+ *  (unioned) into one MultiPolygon, so a single fill + thin outline reads as
+ *  continuous streams with no internal borders. */
+function waterwaysLayer(proj: Projection): string {
+    const parts: string[] = [];
+    for (const f of waterways.features) {
+        const d = geomPathD(f.geometry as Geometry, proj);
+        if (d)
+            parts.push(
                 el("path", {
                     d,
+                    "fill-rule": "evenodd",
                     fill: PALETTE.water,
-                    stroke: portlands ? "none" : PALETTE.waterDeep,
-                    "stroke-width": portlands ? undefined : 0.4,
-                    "stroke-opacity": portlands ? undefined : 0.6,
+                    stroke: PALETTE.waterDeep,
+                    "stroke-width": 0.4,
+                    "stroke-opacity": 0.6,
                     "stroke-linejoin": "round",
                     "stroke-linecap": "round",
                 })
             );
-        }
     }
-    return el("g", {}, parts.join("\n") + rivers.join(""));
+    return el("g", {}, parts.join(""));
 }
 
 /** Toronto Island landmasses drawn as land on top of the water. */
@@ -489,6 +510,55 @@ function islandsLayer(proj: Projection): string {
                 "stroke-linecap": "round",
             })
         );
+    }
+    return el("g", {}, out.join(""));
+}
+
+/** The Toronto Islands are overwhelmingly parkland, so they are shaded park-green
+ *  wholesale ("island-green" = the islands' landmass) and the few things that are
+ *  NOT park — Billy Bishop airport and the Ward's/Algonquin cottage communities
+ *  ("island-nonpark") — are overlaid back in the land tint. Doing it this way
+ *  round avoids the ragged gaps left by patching together individual OSM park
+ *  polygons. Sandy beaches then draw on top at the shore. */
+function islandParksLayer(proj: Projection): string {
+    const out: string[] = [];
+    const byKind = (k: string) => islandParks.features.find((f) => f.properties?.kind === k);
+    // Opaque, and the dissolved outline carries the shoreline stroke: the source
+    // landmass is 14 overlapping polygons, so painting over them opaquely is what
+    // hides their internal outlines and leaves one clean island edge.
+    const green = byKind("island-green");
+    if (green) {
+        const d = geomPathD(green.geometry as Geometry, proj);
+        if (d) out.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.park, stroke: PALETTE.ink, "stroke-width": 1.1, "stroke-opacity": 0.75, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    }
+    const nonpark = byKind("island-nonpark");
+    if (nonpark) {
+        const d = geomPathD(nonpark.geometry as Geometry, proj);
+        if (d) out.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.island, stroke: PALETTE.parkEdge, "stroke-width": 0.3, "stroke-opacity": 0.5, "stroke-linejoin": "round" }));
+    }
+    return el("g", {}, out.join(""));
+}
+
+/** Major green spaces across the whole city (parks, ravines, cemeteries) — big
+ *  shapes only, filled like High Park. No labels: names come solely from the
+ *  curated places list, so an un-listed park stays an unlabelled green mass. */
+function bigParksLayer(proj: Projection): string {
+    const out: string[] = [];
+    for (const fe of bigParks.features) {
+        const d = geomPathD(fe.geometry as Geometry, proj);
+        if (d) out.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.park, "fill-opacity": 0.85, stroke: PALETTE.parkEdge, "stroke-width": 0.5, "stroke-linejoin": "round" }));
+    }
+    return el("g", {}, out.join(""));
+}
+
+/** Sandy beaches (Woodbine, Cherry, Sunnyside, the island beaches, Bluffer's …).
+ *  Drawn above the parks so beach sand isn't buried under the park green that
+ *  the waterfront parks overlap. No labels — names come from the places list. */
+function beachesLayer(proj: Projection): string {
+    const out: string[] = [];
+    for (const fe of beaches.features) {
+        const d = geomPathD(fe.geometry as Geometry, proj);
+        if (d) out.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.beach, stroke: PALETTE.beachEdge, "stroke-width": 0.4, "stroke-linejoin": "round" }));
     }
     return el("g", {}, out.join(""));
 }
@@ -1921,23 +1991,6 @@ function drawInset(
         const d = insetGeomPathD(fe.geometry as Geometry, ip);
         if (d) g.push(el("path", { d, fill: PALETTE.island }));
     }
-    // Port Lands / naturalized Don River new waterways + rivers/canals — the same
-    // hi-res water the main map draws (coreWater's shoreline doesn't include them).
-    for (const fe of water.features) {
-        const w = fe.properties?.water as string | undefined;
-        const pl = (fe.properties as Record<string, unknown>)?.portlands === true;
-        if (w !== "river" && w !== "canal" && !pl) continue;
-        if (!featureNear(fe, ip, near)) continue;
-        const d = insetGeomPathD(fe.geometry as Geometry, ip);
-        if (!d) continue;
-        g.push(el("path", {
-            d, "fill-rule": "evenodd", fill: PALETTE.water,
-            stroke: pl ? "none" : PALETTE.waterDeep,
-            "stroke-width": pl ? undefined : 0.5,
-            "stroke-opacity": pl ? undefined : 0.6,
-            "stroke-linejoin": "round", "stroke-linecap": "round",
-        }));
-    }
     if (waterD)
         g.push(el("path", { d: waterD, "fill-rule": "evenodd", fill: "none", stroke: PALETTE.ink, "stroke-width": 1, "stroke-opacity": 0.7, "stroke-linejoin": "round", "stroke-linecap": "round" }));
 
@@ -1946,6 +1999,43 @@ function drawInset(
     for (const fe of parkFeatures) {
         const d = insetGeomPathD(fe.geometry as Geometry, ip);
         if (d) g.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.park, "fill-opacity": 0.85, stroke: PALETTE.parkEdge, "stroke-width": 0.7, "stroke-linejoin": "round" }));
+    }
+
+    // Toronto Islands: shaded park-green wholesale, then the non-park parts
+    // (airport, cottage communities) overlaid back in the land tint. Drawn after
+    // the parks above so the islands' own shading wins, and opaquely so the
+    // overlapping source polygons' internal outlines don't show through.
+    for (const kind of ["island-green", "island-nonpark"] as const) {
+        const fe = islandParks.features.find((f) => f.properties?.kind === kind);
+        if (!fe) continue;
+        const d = insetGeomPathD(fe.geometry as Geometry, ip);
+        if (!d) continue;
+        g.push(
+            kind === "island-green"
+                ? el("path", { d, "fill-rule": "evenodd", fill: PALETTE.park, stroke: PALETTE.ink, "stroke-width": 1, "stroke-opacity": 0.7, "stroke-linejoin": "round", "stroke-linecap": "round" })
+                : el("path", { d, "fill-rule": "evenodd", fill: PALETTE.island, stroke: PALETTE.parkEdge, "stroke-width": 0.4, "stroke-opacity": 0.5, "stroke-linejoin": "round" })
+        );
+    }
+
+    // sandy beaches on top of the parks (Woodbine, Cherry, the island beaches …)
+    for (const fe of beaches.features) {
+        if (!featureNear(fe, ip, near)) continue;
+        const d = insetGeomPathD(fe.geometry as Geometry, ip);
+        if (d) g.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.beach, stroke: PALETTE.beachEdge, "stroke-width": 0.5, "stroke-linejoin": "round" }));
+    }
+
+    // Port Lands / naturalized Don River waterways + rivers/canals — the same
+    // pre-dissolved hi-res water the main map draws (coreWater's shoreline doesn't
+    // include them). On top of the parks so channels aren't buried under ravine green.
+    for (const fe of waterways.features) {
+        if (!featureNear(fe, ip, near)) continue;
+        const d = insetGeomPathD(fe.geometry as Geometry, ip);
+        if (!d) continue;
+        g.push(el("path", {
+            d, "fill-rule": "evenodd", fill: PALETTE.water,
+            stroke: PALETTE.waterDeep, "stroke-width": 0.5, "stroke-opacity": 0.6,
+            "stroke-linejoin": "round", "stroke-linecap": "round",
+        }));
     }
 
     // high-res road network (unsmoothed, hierarchical, continues to the edges)

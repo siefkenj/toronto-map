@@ -35,21 +35,70 @@ body {
     margin-left: 12px;
 }
 
+.titlebar .route-link {
+    color: #b9a37a;
+    font-size: 12px;
+    float: right;
+    text-decoration: none;
+    border-bottom: 1px dotted #6f6248;
+}
+
+.titlebar .route-link:hover {
+    color: #e8d9b4;
+}
+
+.route-loading,
+.map-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    padding: 24px;
+    color: #9c8b6c;
+    font-size: 14px;
+    text-align: center;
+}
+
 /* The map fills the remaining space; svg-pan-zoom manages scale/pan. */
 .map-holder {
     flex: 1 1 auto;
     min-height: 0;
     background: #3a342b;
+    overscroll-behavior: none;
+}
+
+/* Scoped to the live-renderer route, never bare `.map-holder svg`: Leaflet puts
+   its own inline SVG in the attribution control, and a descendant selector here
+   outranks Leaflet's own class rule and blows that 12x8 icon up to fill the map. */
+.svg-map {
     /* Claim every touch gesture over the map. Without this the browser treats a
        drag as a scroll and a pinch as page zoom, and stops delivering the
        touchmove events our gesture handler needs. */
     touch-action: none;
-    overscroll-behavior: none;
 }
 
-.map-holder svg {
+.svg-map > svg {
     width: 100%;
     height: 100%;
     display: block;
     touch-action: none;
+}
+
+/* Leaflet drives the pre-rendered route and sets its own touch-action on the
+   container (.leaflet-touch-drag.leaflet-touch-zoom), which outranks the rule
+   above — so gestures stay Leaflet's to handle. */
+.map-holder.leaflet-container {
+    height: 100%;
+    background: #3a342b;
+    font-family: Georgia, "Times New Roman", serif;
+}
+
+.leaflet-container .leaflet-control-attribution {
+    background: rgba(32, 29, 24, 0.82);
+    color: #9c8b6c;
+    font-size: 10px;
+}
+
+.leaflet-container .leaflet-control-attribution a {
+    color: #b9a37a;
 }
