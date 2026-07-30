@@ -45,11 +45,15 @@ export const PALETTE = {
         "Old Toronto": "#d8c9a6",
         Toronto: "#d8c9a6",
         "East York": "#cdb79b",
-        York: "#d3c19c",
+        // York deliberately shares East York's tint
+        York: "#cdb79b",
         "North York": "#c9c3a0",
-        Etobicoke: "#dcc8a0",
+        // a cool sage, deliberately the most separated of the five tints: it was
+        // previously the closest of any pair to Old Toronto's warm tan
+        Etobicoke: "#b8c7b2",
         Scarborough: "#cdbf9e",
     } as Record<string, string>,
+
     regionDefault: "#d4c4a0",
 } as const;
 
@@ -75,4 +79,5 @@ export const LABEL_STYLE = {
     landmark: { size: 6.5, tracking: 0.1, fill: "#4a3a28" },
     municipality: { size: 12, tracking: 2, fill: PALETTE.ink },
     river: { size: 8, tracking: 0.4, fill: PALETTE.waterLabel },
+    park: { size: 7, tracking: 0.3, fill: PALETTE.parkLabel },
 };

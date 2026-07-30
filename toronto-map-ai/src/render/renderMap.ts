@@ -24,12 +24,14 @@ import bigParksRaw from "../assets/toronto-parks.geojson.json";
 import beachesRaw from "../assets/toronto-beaches.geojson.json";
 import waterwaysRaw from "../assets/toronto-waterways.geojson.json";
 import islandParksRaw from "../assets/toronto-island-parks.geojson.json";
+import arterialsRaw from "../assets/toronto-arterials.geojson.json";
 
 import {
     FERRY_ROUTES,
     LANDMARKS,
     MUNICIPALITIES,
     NEIGHBOURHOODS,
+    PARK_LABELS,
     RIVER_LABELS,
     SUPER_DISTRICTS,
 } from "../data/places";
@@ -72,6 +74,7 @@ const bigParks = bigParksRaw as unknown as FeatureCollection;
 const beaches = beachesRaw as unknown as FeatureCollection;
 const waterways = waterwaysRaw as unknown as FeatureCollection;
 const islandParks = islandParksRaw as unknown as FeatureCollection;
+const arterials = arterialsRaw as unknown as FeatureCollection;
 
 /** Colours for the rapid-transit lines (muted to sit on the sepia palette). */
 const TRANSIT_STYLE: Record<string, { color: string; dash?: string; label: string }> = {
@@ -133,6 +136,7 @@ const PRIO = {
     superDistrict: 74,
     river: 66,
     neighbourhood: 60,
+    park: 56,
     landmarkIcon: 52,
     landmarkWater: 50,
     street: 44,
@@ -195,6 +199,7 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     mapContent.push(airportLayer(proj));
     mapContent.push(ferryLayer(proj));
     mapContent.push(highwaysLayer(proj));
+    mapContent.push(arterialsLayer(proj));
     mapContent.push(streetsLayer(proj));
     mapContent.push(transitLayer(proj));
     mapContent.push(stationsLayer(proj));
@@ -208,8 +213,14 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     const hwyItems = highways.features
         .filter((f) => f.geometry?.type === "MultiLineString")
         .map((f) => ({ name: (f.properties?.label as string) ?? "", chains: mergedChainsOf(f) }));
+    // arterials are the lowest tier: small and subdued, and they yield to both
+    // the spine streets and the highways (whose boxes are reserved first).
+    const artItems = arterials.features
+        .filter((f) => f.geometry?.type === "MultiLineString")
+        .map((f) => ({ name: (f.properties?.name as string) ?? "", chains: mergedChainsOf(f) }));
     mapContent.push(curvedRoadLabels(proj, streetItems, { size: LABEL_STYLE.street.size, tracking: LABEL_STYLE.street.tracking ?? 1, fill: LABEL_STYLE.street.fill, weight: 500, italic: true }, frame as Rect, roadLabelKeepOut));
     mapContent.push(curvedRoadLabels(proj, hwyItems, { size: 6, tracking: 0.8, fill: PALETTE.inkFaint, weight: 600, italic: false }, frame as Rect, roadLabelKeepOut));
+    mapContent.push(curvedRoadLabels(proj, artItems, { size: 4.6, tracking: 0.35, fill: PALETTE.inkFaint, weight: 400, italic: true, upper: false }, frame as Rect, roadLabelKeepOut));
     mapContent.push(emitLeaders(mapLabels));
     mapContent.push(emitLabels(mapLabels));
     // transit labels on top of the map labels (their boxes were reserved above)
@@ -373,46 +384,65 @@ function paperAndVignette(W: number, H: number): string {
 // regions + neighbourhoods (high-res boundaries)
 // ---------------------------------------------------------------------------
 
-function regionForCentroid(centroid: [number, number]): string {
-    for (const r of level8.features) {
-        if (r.geometry?.type === "Polygon" || r.geometry?.type === "MultiPolygon") {
-            const polys =
-                r.geometry.type === "Polygon"
-                    ? [(r.geometry as Polygon).coordinates]
-                    : (r.geometry as MultiPolygon).coordinates;
-            for (const poly of polys)
-                if (pointInPolygon(centroid, poly)) return (r.properties?.name as string) || "Old Toronto";
+
+/**
+ * Which former borough a neighbourhood belongs to, by majority vote of its
+ * outline vertices. A single centroid test misassigns the L- and U-shaped
+ * neighbourhoods (whose centroid can fall outside the polygon entirely), so
+ * sample the outline instead. Memoised — this runs over every neighbourhood.
+ */
+const boroughCache = new Map<Feature, string>();
+function boroughOfNeighbourhood(f: Feature): string {
+    let hit = boroughCache.get(f);
+    if (hit) return hit;
+    const g = f.geometry as Polygon | MultiPolygon;
+    const rings = g.type === "Polygon" ? [g.coordinates[0]] : g.coordinates.map((p) => p[0]);
+    const votes = new Map<string, number>();
+    for (const ring of rings) {
+        const step = Math.max(1, Math.floor(ring.length / 24));
+        for (let i = 0; i < ring.length; i += step) {
+            const pt = ring[i] as [number, number];
+            let name = "Old Toronto";
+            for (const r of level8.features) {
+                if (!isPolygonal(r)) continue;
+                const rg = r.geometry as Polygon | MultiPolygon;
+                const polys = rg.type === "Polygon" ? [rg.coordinates] : rg.coordinates;
+                if (polys.some((poly) => pointInPolygon(pt, poly))) {
+                    name = (r.properties?.name as string) || "Old Toronto";
+                    break;
+                }
+            }
+            votes.set(name, (votes.get(name) ?? 0) + 1);
         }
     }
-    return "Old Toronto";
+    let best = "Old Toronto", bestN = -1;
+    for (const [k, n] of votes) if (n > bestN) { bestN = n; best = k; }
+    boroughCache.set(f, best);
+    return best;
 }
 
 function regionsAndNeighbourhoods(proj: Projection): string {
+    // Neighbourhoods contribute their region tint only — no boundaries are drawn
+    // for them at all; the sole administrative outlines are the former boroughs.
+    // Each neighbourhood is washed with the tint of the borough it mostly lies in.
+    //
+    // Filling the borough polygons directly would be more literally accurate, but
+    // the former-borough lines don't respect today's neighbourhoods — the old York
+    // boundary, for instance, runs straight through the middle of Runnymede-Bloor
+    // West Village — so it lays a hard colour edge across the interior of a
+    // neighbourhood with no street or ravine to explain it. With the boundaries
+    // themselves not drawn, snapping the wash to neighbourhood outlines keeps
+    // every colour break on a real feature.
     const fills: string[] = [];
-    const bounds: string[] = [];
     for (const f of level10.features) {
         if (!isPolygonal(f)) continue;
-        const centroid = simpleCenter(
-            (f.geometry as Polygon | MultiPolygon).coordinates as
-                | Polygon["coordinates"]
-                | MultiPolygon["coordinates"]
-        );
-        const region = regionForCentroid(centroid);
-        const fill = PALETTE.regions[region] ?? PALETTE.regionDefault;
+        const fill = PALETTE.regions[boroughOfNeighbourhood(f)] ?? PALETTE.regionDefault;
         const d = geomPathD(f.geometry, proj);
-        fills.push(el("path", { d, fill, "fill-rule": "evenodd" }));
-        bounds.push(
-            el("path", {
-                d,
-                fill: "none",
-                stroke: PALETTE.inkFaint,
-                "stroke-width": 0.5,
-                "stroke-opacity": 0.7,
-            })
-        );
+        if (d) fills.push(el("path", { d, fill, "fill-rule": "evenodd" }));
     }
-    return el("g", {}, fills.join("") + bounds.join(""));
+    return el("g", {}, fills.join(""));
 }
+
 
 // ---------------------------------------------------------------------------
 // water
@@ -1051,18 +1081,125 @@ function centrelineChains(rawll: LonLatTuple[][], stepM = 12, cellM = 46, maxLin
     return out;
 }
 
+/** Total length of a set of lon/lat chains, in metres. */
+function chainsLengthM(chains: LonLatTuple[][]): number {
+    let total = 0;
+    for (const c of chains) {
+        for (let i = 1; i < c.length; i++) {
+            const kx = Math.cos((c[i][1] * Math.PI) / 180) * 111320;
+            total += Math.hypot((c[i][0] - c[i - 1][0]) * kx, (c[i][1] - c[i - 1][1]) * 111320);
+        }
+    }
+    return total;
+}
+
+/**
+ * Join chains whose endpoints nearly touch — the same street split by a junction
+ * or a simplification artefact. The centreline reconstruction bridges these
+ * implicitly (its kNN graph links across gaps), so the stitched branch has to do
+ * it explicitly or the road shows false breaks. Repeatedly joins the closest
+ * pair within `maxGapM`; chain counts per street are small, so O(n²) is fine.
+ */
+function bridgeChains(chains: LonLatTuple[][], maxGapM: number): LonLatTuple[][] {
+    const out = chains.map((c) => c.slice());
+    const gap = (p: LonLatTuple, q: LonLatTuple) => {
+        const kx = Math.cos((p[1] * Math.PI) / 180) * 111320;
+        return Math.hypot((p[0] - q[0]) * kx, (p[1] - q[1]) * 111320);
+    };
+    for (;;) {
+        let bi = -1, bj = -1, bd = maxGapM, bmode = 0;
+        for (let i = 0; i < out.length; i++) {
+            for (let j = i + 1; j < out.length; j++) {
+                const A = out[i], B = out[j];
+                const ends: Array<[LonLatTuple, LonLatTuple]> = [
+                    [A[A.length - 1], B[0]],
+                    [A[A.length - 1], B[B.length - 1]],
+                    [A[0], B[0]],
+                    [A[0], B[B.length - 1]],
+                ];
+                for (let m = 0; m < 4; m++) {
+                    const d = gap(ends[m][0], ends[m][1]);
+                    if (d < bd) { bd = d; bi = i; bj = j; bmode = m; }
+                }
+            }
+        }
+        if (bi < 0) break;
+        const A = out[bi], B = out[bj];
+        out[bi] =
+            bmode === 0 ? A.concat(B)
+            : bmode === 1 ? A.concat(B.slice().reverse())
+            : bmode === 2 ? A.slice().reverse().concat(B)
+            : B.concat(A);
+        out.splice(bj, 1);
+    }
+    return out;
+}
+
 const mergedChainsCache = new Map<Feature, LonLatTuple[][]>();
-/** Reconstructed centreline(s) for a road feature, computed once. */
+/**
+ * Drawable centreline(s) for a road feature, computed once.
+ *
+ * The centreline reconstruction exists to collapse divided carriageways into one
+ * line, but it resamples onto a ~46 m grid, so on a road that has no duplicate
+ * carriageways it doesn't merge anything — it just replaces good geometry with
+ * grid-snapped facets, which is what makes those roads look jagged. So: run it,
+ * and keep it only when it genuinely collapsed duplicates (the result is much
+ * shorter than the stitched input). Otherwise the stitched geometry is used,
+ * which is strictly more faithful.
+ */
 function mergedChainsOf(f: Feature): LonLatTuple[][] {
     let c = mergedChainsCache.get(f);
     if (!c) {
         const raw = f.geometry?.type === "MultiLineString"
             ? (f.geometry.coordinates as Position[][]).map((l) => l.map((p) => p as LonLatTuple))
             : [];
-        c = centrelineChains(raw);
+        // stubs are slip lanes / service spurs, not the street: the reconstruction
+        // drops them implicitly (it keeps only the longest path per component), so
+        // the stitched branch has to drop them explicitly or they show as orphans.
+        const stitched = bridgeChains(stitchLines(raw).filter((l) => l.length >= 2), 300)
+            .filter((l) => chainsLengthM([l]) >= 250);
+        const rec = centrelineChains(raw);
+        const merged = chainsLengthM(rec) < chainsLengthM(stitched) * 0.75;
+        c = merged || stitched.length === 0 ? rec : stitched;
         mergedChainsCache.set(f, c);
     }
     return c;
+}
+
+/** Secondary tier: the city's arterial grid (Finch, Lawrence, Kipling, Kennedy …),
+ *  clipped to the city limits so the surrounding towns stay empty paper. Drawn
+ *  lighter and thinner than the spine streets, and unlabelled — they supply the
+ *  street network's texture without competing with the named roads. */
+function arterialsLayer(proj: Projection): string {
+    const casings: string[] = [];
+    const inks: string[] = [];
+    for (const f of arterials.features) {
+        if (f.geometry?.type !== "MultiLineString") continue;
+        for (const line of mergedChainsOf(f)) {
+            const d = polyline(line.map((p) => proj.project(p)));
+            casings.push(
+                el("path", {
+                    d,
+                    fill: "none",
+                    stroke: PALETTE.paper,
+                    "stroke-width": 1.9,
+                    "stroke-linecap": "round",
+                    "stroke-linejoin": "round",
+                })
+            );
+            inks.push(
+                el("path", {
+                    d,
+                    fill: "none",
+                    stroke: PALETTE.inkFaint,
+                    "stroke-width": 0.65,
+                    "stroke-linecap": "round",
+                    "stroke-linejoin": "round",
+                })
+            );
+        }
+    }
+    return el("g", {}, el("g", { opacity: 0.7 }, casings.join("")) + el("g", { opacity: 0.9 }, inks.join("")));
 }
 
 function streetsLayer(proj: Projection): string {
@@ -1226,6 +1363,19 @@ function collectLabelInputs(proj: Projection, eastVec: Pt): LabelInput[] {
             family: FONTS.italic,
             italic: true,
             priority: PRIO.river,
+            halo: PALETTE.paper,
+            haloWidth: 3,
+        }));
+
+    // big parks / green spaces (the parks layer itself is unnamed — see PARK_LABELS)
+    for (const d of PARK_LABELS)
+        inputs.push(areaLabel(`park:${d.name}`, d.name, proj.project(d.at), {
+            size: S.park.size,
+            tracking: S.park.tracking,
+            fill: S.park.fill,
+            family: FONTS.italic,
+            italic: true,
+            priority: d.priority ?? PRIO.park,
             halo: PALETTE.paper,
             haloWidth: 3,
         }));
@@ -1417,7 +1567,7 @@ function subPolyline(pts: Pt[], cum: number[], dS: number, dE: number): Pt[] {
  * under the glyphs. Each label finds the straightest, most central window that
  * clears already-placed labels.
  */
-interface CurvedLabelStyle { size: number; tracking: number; fill: string; weight: number | string; italic: boolean; }
+interface CurvedLabelStyle { size: number; tracking: number; fill: string; weight: number | string; italic: boolean; /** upper-case the name (default true) */ upper?: boolean; }
 
 /**
  * Road names as curved text bent along the centreline. Following the road (not a
@@ -1445,7 +1595,7 @@ function curvedRoadLabels(
         .filter((o) => o.line && o.line.length >= 2)
         .sort((a, b) => (b.line!.length) - (a.line!.length));
     for (const { it, line } of feats) {
-        const name = it.name.toUpperCase();
+        const name = (style.upper ?? true) ? it.name.toUpperCase() : it.name;
         if (!name) continue;
         const pts = (line as LonLatTuple[]).map((p) => proj.project(p));
         const cum = [0];
@@ -1501,15 +1651,21 @@ function curvedRoadLabels(
                 if (dev <= size * 0.5) { chosen = cand; break outer; } // genuinely flat — done
             }
         }
-        // A genuinely flat window → straight text; otherwise take the least-curved
-        // spot and bend + kern the glyphs onto it.
-        const straightMode = !!chosen;
         if (!chosen) chosen = fallback;
         if (!chosen) continue;
+        // Anything CLOSE to straight is drawn perfectly straight: bending text
+        // along a nearly-straight road only makes it look unsteady. Only a window
+        // whose sag exceeds this is worth curving + kerning.
+        const straightMode = chosen.dev <= Math.max(size * 1.1, w * 0.045);
         occupied.push(...chosen.boxes);
         const chars = [...name];
         const advances = chars.map((c) => charAdvance(c) * size);
         const wordLen = advances.reduce((s, a) => s + a, 0) + tracking * (chars.length - 1);
+        // Glyphs are collected and emitted as ONE filtered group per label. Halo-ing
+        // each glyph individually paints glyph n+1's halo over glyph n's ink, which
+        // reads as the letters eating each other; one group = one halo behind the
+        // whole word, all ink on top.
+        const glyphs: string[] = [];
 
         if (straightMode) {
             // low curvature: straight baseline along the window chord, so gentle
@@ -1525,12 +1681,13 @@ function curvedRoadLabels(
             for (let i = 0; i < chars.length; i++) {
                 const cc = c + advances[i] / 2;
                 if (chars[i] !== " ")
-                    texts.push(text(mx + dx * cc + nx * off, my + dy * cc + ny * off, chars[i], {
+                    glyphs.push(text(mx + dx * cc + nx * off, my + dy * cc + ny * off, chars[i], {
                         size, fill, family: FONTS.serif, italic, weight,
-                        anchor: "middle", rotate: ang, halo: PALETTE.paper, haloId: "haloPaper",
+                        anchor: "middle", rotate: ang,
                     }));
                 c += advances[i] + tracking;
             }
+            texts.push(el("g", { filter: "url(#haloPaper)" }, glyphs.join("")));
             continue;
         }
 
@@ -1578,12 +1735,13 @@ function curvedRoadLabels(
             const gx = cx + ty * off;
             const gy = cy - tx * off;
             if (chars[i] !== " ")
-                texts.push(text(gx, gy, chars[i], {
+                glyphs.push(text(gx, gy, chars[i], {
                     size, fill, family: FONTS.serif, italic, weight,
-                    anchor: "middle", rotate: angleDeg([tx, ty]), halo: PALETTE.paper, haloId: "haloPaper",
+                    anchor: "middle", rotate: angleDeg([tx, ty]),
                 }));
             d += advances[i] + tracking + extras[i];
         }
+        texts.push(el("g", { filter: "url(#haloPaper)" }, glyphs.join("")));
     }
     return el("g", {}, texts.join(""));
 }

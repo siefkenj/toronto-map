@@ -165,6 +165,46 @@ export const FERRY_ROUTES: Array<[LonLat, LonLat]> = [
     [[-79.3756, 43.64], [-79.3889, 43.6212]], // → Hanlan's Point dock
 ];
 
+/**
+ * Big green spaces worth naming on the main map. The parks layer itself is
+ * drawn from dissolved OSM polygons (which lose their names in the union), so
+ * these label points are carried separately — each is the real centroid of the
+ * OSM feature, and only parks whose centroid falls inside the map frame are
+ * listed. Parks already named elsewhere (High Park, Tommy Thompson Park via the
+ * neighbourhood list; Evergreen Brick Works via the landmarks) are omitted.
+ */
+export const PARK_LABELS: PlaceLabel[] = [
+    // Scarborough / east
+    { name: "Rouge National Urban Park", at: [-79.1711, 43.8464], priority: 58 },
+    { name: "Toronto Zoo", at: [-79.1844, 43.8202], priority: 58 },
+    { name: "Scarborough Bluffs", at: [-79.2320, 43.7060], priority: 58 },
+    { name: "Morningside Park", at: [-79.2067, 43.7773] },
+    { name: "East Point Park", at: [-79.1654, 43.7581] },
+    { name: "Thomson Memorial Park", at: [-79.2526, 43.7597] },
+    { name: "Milliken Park", at: [-79.2701, 43.8279] },
+    // Don valley / midtown
+    { name: "Sunnybrook Park", at: [-79.3679, 43.7240] },
+    { name: "E. T. Seton Park", at: [-79.3405, 43.7079] },
+    { name: "Taylor Creek Park", at: [-79.3146, 43.7012] },
+    { name: "Edwards Gardens", at: [-79.3575, 43.7315] },
+    { name: "Mount Pleasant Cemetery", at: [-79.3848, 43.6953] },
+    { name: "Cedarvale Park", at: [-79.4229, 43.6905] },
+    { name: "East Don Parkland", at: [-79.3787, 43.7957] },
+    { name: "L'Amoreaux Park", at: [-79.3082, 43.8130] },
+    // North York / west
+    { name: "Earl Bales Park", at: [-79.4218, 43.7516] },
+    { name: "G. Ross Lord Park", at: [-79.4603, 43.7810] },
+    { name: "Downsview Park", at: [-79.4807, 43.7405] },
+    { name: "Rowntree Mills Park", at: [-79.5774, 43.7535] },
+    { name: "West Humber Parkland", at: [-79.5588, 43.7341] },
+    { name: "Claireville Conservation Area", at: [-79.6604, 43.7560] },
+    // Etobicoke / lakeshore
+    { name: "Centennial Park", at: [-79.5910, 43.6517] },
+    { name: "Colonel Samuel Smith Park", at: [-79.5134, 43.5911] },
+    { name: "Marie Curtis Park", at: [-79.5428, 43.5832] },
+    { name: "Ashbridges Bay Park", at: [-79.3092, 43.6577] },
+];
+
 /** Major named rivers/creeks to label in italic along their course (§7). */
 export const RIVER_LABELS: PlaceLabel[] = [
     { name: "Humber River", at: [-79.49, 43.69] },
