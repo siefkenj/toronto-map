@@ -21,8 +21,9 @@
  */
 export interface PosterRenderOptions {
     inset?: { width?: number };
+    index?: { sideColumn?: number };
 }
-export const CANONICAL_RENDER: PosterRenderOptions = { inset: { width: 560 } };
+export const CANONICAL_RENDER: PosterRenderOptions = { inset: { width: 660 }, index: { sideColumn: 1.4 } };
 
 /**
  * Nominal size of the canonical render — its `viewBox`, and so the coordinate

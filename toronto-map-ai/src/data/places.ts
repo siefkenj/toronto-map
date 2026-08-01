@@ -18,7 +18,6 @@ export interface PlaceLabel {
 export const SUPER_DISTRICTS: PlaceLabel[] = [
     { name: "MIDTOWN", at: [-79.398, 43.703] },
     { name: "UPTOWN", at: [-79.401, 43.745] },
-    { name: "THE WATERFRONT", at: [-79.372, 43.638] },
     { name: "THE PORT LANDS", at: [-79.338, 43.651] },
 ];
 
@@ -114,7 +113,7 @@ export const LANDMARKS: Landmark[] = [
     { name: "Exhibition Place", at: [-79.4156, 43.6335], kind: "icon" },
     { name: "Evergreen Brick Works", at: [-79.3647, 43.6843], kind: "icon" },
     // Waterfront & islands
-    { name: "Toronto Islands", at: [-79.373, 43.6205], kind: "water" },
+    { name: "Toronto Islands", at: [-79.373, 43.6205], kind: "water", centeredLabel: true },
     { name: "Billy Bishop Airport", at: [-79.3945, 43.6289], kind: "water", centeredLabel: true },
     { name: "Harbourfront Centre", at: [-79.3819, 43.6388], kind: "water", insetOnly: true },
     { name: "Ontario Place", at: [-79.415, 43.628], kind: "water" },
@@ -131,12 +130,15 @@ export interface Municipality extends PlaceLabel {
     group: "West" | "North" | "East";
 }
 
+// The hand nudges these once carried were measured against the old, much taller
+// frame; the map is now cropped to the shoreline, so the packing engine's own
+// placement along the shortened border is the correct one.
 export const MUNICIPALITIES: Municipality[] = [
     // West (Peel / Halton)
-    { name: "Mississauga", at: [-79.64, 43.59], group: "West", nudge: [100, 52] },
+    { name: "Mississauga", at: [-79.64, 43.59], group: "West" },
     { name: "Brampton", at: [-79.76, 43.73], group: "West" },
-    { name: "Oakville", at: [-79.69, 43.47], group: "West" , nudge: [0, -254] },
-    { name: "Burlington", at: [-79.8, 43.33], group: "West", nudge: [0, -324] },
+    { name: "Oakville", at: [-79.69, 43.47], group: "West" },
+    { name: "Burlington", at: [-79.8, 43.33], group: "West" },
     { name: "Milton", at: [-79.88, 43.51], group: "West" },
     { name: "Georgetown", at: [-79.92, 43.65], group: "West" },
     { name: "Caledon", at: [-79.73, 43.87], group: "West" },
@@ -160,9 +162,12 @@ export const MUNICIPALITIES: Municipality[] = [
  * Islands — drawn as dotted lines. Each is a [from, to] pair of [lon, lat].
  */
 export const FERRY_ROUTES: Array<[LonLat, LonLat]> = [
-    [[-79.3756, 43.64], [-79.3785, 43.6238]], // → Centre Island dock
-    [[-79.3756, 43.64], [-79.3517, 43.6234]], // → Ward's Island dock
-    [[-79.3756, 43.64], [-79.3889, 43.6212]], // → Hanlan's Point dock
+    // Island ends are the OSM amenity=ferry_terminal docks, not the island
+    // centres — the docks all sit on the harbour (north) shore, so aiming at
+    // the landmass instead put these lines out in open water.
+    [[-79.3751, 43.6402], [-79.3781, 43.6224]], // → Centre Island dock
+    [[-79.3751, 43.6402], [-79.3578, 43.6314]], // → Ward's Island dock
+    [[-79.3751, 43.6402], [-79.3891, 43.6279]], // → Hanlan's Point dock
 ];
 
 /**

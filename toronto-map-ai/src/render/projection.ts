@@ -41,6 +41,20 @@ export interface Projection {
 export type LonLatTuple = [number, number];
 
 /**
+ * How the content is fitted into the frame when the two aspect ratios disagree.
+ *
+ * `contain` scales the bounds down until they fit entirely, centred — any
+ * mismatch shows as blank paper on two sides.
+ *
+ * `cover-top` scales until the frame is filled and lets the overflow fall off
+ * the bottom (the frame clip takes care of it), keeping the content flush with
+ * the top edge. The poster frame is deliberately wider than the city is tall,
+ * and the overflow is all Lake Ontario, so this is how the map earns the space
+ * the index panel occupies without shrinking or leaving a slack inner margin.
+ */
+export type FitMode = "contain" | "cover-top";
+
+/**
  * Build an affine projection that rotates by `rot` degrees and auto-fits the
  * given geographic bounds into `canvas` minus `margin`, preserving aspect ratio.
  */
@@ -48,7 +62,8 @@ export function makeProjection(
     canvas: { w: number; h: number },
     margin: { top: number; right: number; bottom: number; left: number },
     bounds: GeoBounds = CONTENT_BOUNDS,
-    rot = CITY_ROT
+    rot = CITY_ROT,
+    fit: FitMode = "contain"
 ): Projection {
     // lon/lat -> rotated "world" (km-ish, y-down)
     const worldMat = Mat.scale(LON_SCALE, -LAT_SCALE).rotate(rot);
@@ -72,13 +87,19 @@ export function makeProjection(
         w: canvas.w - margin.left - margin.right,
         h: canvas.h - margin.top - margin.bottom,
     };
-    const s = Math.min(frame.w / worldW, frame.h / worldH);
+    const s =
+        fit === "cover-top"
+            ? Math.max(frame.w / worldW, frame.h / worldH)
+            : Math.min(frame.w / worldW, frame.h / worldH);
     const screenCx = frame.x + frame.w / 2;
-    const screenCy = frame.y + frame.h / 2;
+    // `contain` centres vertically; `cover-top` pins the north edge of the
+    // bounds to the top of the frame so everything that spills is southern.
+    const ty =
+        fit === "cover-top"
+            ? frame.y - s * (worldCy - worldH / 2)
+            : frame.y + frame.h / 2 - s * worldCy;
 
-    const mat = worldMat
-        .scale(s, s)
-        .translate(screenCx - s * worldCx, screenCy - s * worldCy);
+    const mat = worldMat.scale(s, s).translate(screenCx - s * worldCx, ty);
 
     const project = (p: LonLatTuple): [number, number] =>
         mat.apply(p as Position) as [number, number];

@@ -6,10 +6,40 @@
 // (when allowDrop) — guaranteeing no two placed labels overlap.
 
 import type { Pt } from "./svg";
+import { FACE_METRICS } from "./fontMetrics";
+
+/**
+ * A circled index number drawn immediately before the label text, keying the
+ * feature to its entry in the gazetteer panel. For landmarks it stands in for
+ * the marker dot, so it carries that marker's colour.
+ */
+export interface LabelBadge {
+    /** what is set inside the circle: an index number, or a town's initials */
+    label: string;
+    color: string;
+}
+
+/** Badge circle radius and the gap after it, both as multiples of the font size. */
+const BADGE_R = 0.62;
+const BADGE_GAP = 0.26;
+
+/** Horizontal room the badge takes up ahead of the text, in label units. */
+export function badgeAdvance(inp: { size: number; badge?: LabelBadge }): number {
+    return inp.badge ? inp.size * (BADGE_R * 2 + BADGE_GAP) : 0;
+}
+
+/** Geometry of a label's badge, given the left edge of the whole label. */
+export function badgeGeometry(size: number, left: number, baseline: number): { cx: number; cy: number; r: number } {
+    const r = size * BADGE_R;
+    // centred on the text's optical middle rather than its baseline
+    return { cx: left + r, cy: baseline - size * 0.24, r };
+}
 
 export interface LabelInput {
     id: string;
     text: string;
+    /** optional circled index number drawn ahead of the text */
+    badge?: LabelBadge;
     /** ideal anchor: label centre (area) or the marker point (point) */
     anchor: Pt;
     size: number;
@@ -25,8 +55,22 @@ export interface LabelInput {
     halo?: string;
     haloWidth?: number;
     allowDrop?: boolean;
+    /**
+     * Never reduce this label to its badge alone — the name has to appear. Such
+     * a label falls back to a leadered point placement and, failing that, is
+     * forced into position rather than abbreviated.
+     */
+    nameRequired?: boolean;
     /** label lives in the outer margin (skip frame containment test) */
     inMargin?: boolean;
+    /**
+     * Never draw a leader to this label's anchor. An area label that cannot fit
+     * is retried as a point label, which draws a leader so a displaced name still
+     * says what it belongs to. That reads correctly for a feature with a real
+     * position, but the anchor of a big open area is a nominal interior point, so
+     * the leader is a line to nothing — set this for those.
+     */
+    noLeader?: boolean;
 }
 
 export interface PlacedLabel extends LabelInput {
@@ -52,17 +96,23 @@ export interface Rect {
 
 const PAD = 1.9;
 
-export function charAdvance(ch: string): number {
-    if (" .,:;'!|il".includes(ch)) return 0.28;
-    if ("fjrt()[]-I".includes(ch)) return 0.34;
-    if ("mwMW".includes(ch)) return 0.86;
-    if (ch >= "A" && ch <= "Z") return 0.64;
-    return 0.5;
+/**
+ * Advance width of one character in em, for `face` ("serif" | "italic" |
+ * "display"). Measured from the real fonts by scripts/build-font-metrics.ts;
+ * this used to be a five-bucket guess, which was tolerable for deciding roughly
+ * where a map label sits but nowhere near good enough to set justified copy.
+ */
+export function charAdvance(ch: string, face: FaceName = "serif"): number {
+    const m = FACE_METRICS[face] ?? FACE_METRICS.serif;
+    return m.adv[ch] ?? m.fallback;
 }
 
-export function textWidth(text: string, size: number, tracking = 0): number {
+export type FaceName = "serif" | "serifBold" | "italic" | "display";
+
+export function textWidth(text: string, size: number, tracking = 0, face: FaceName = "serif"): number {
+    const m = FACE_METRICS[face] ?? FACE_METRICS.serif;
     let w = 0;
-    for (const ch of text) w += charAdvance(ch) * size;
+    for (const ch of text) w += (m.adv[ch] ?? m.fallback) * size;
     return w + tracking * Math.max(0, text.length - 1);
 }
 
@@ -108,7 +158,7 @@ function overlaps(a: Box, b: Box): boolean {
 
 /** Screen-space AABB actually occupied by an already-placed label. */
 export function labelBox(p: PlacedLabel): Box {
-    const w = textWidth(p.text, p.size, p.tracking);
+    const w = textWidth(p.text, p.size, p.tracking) + badgeAdvance(p);
     let box = boxAt(p.x, p.y, w, p.size, p.finalAnchor);
     if (p.rotate) box = rotatedAABB(box, p.x, p.y, p.rotate);
     return box;
@@ -191,28 +241,58 @@ export function placeLabels(
 
     const ordered = [...inputs].sort((a, b) => b.priority - a.priority);
 
-    for (const inp of ordered) {
-        const w = textWidth(inp.text, inp.size, inp.tracking);
-        const cands = candidatesFor(inp);
-        let chosen: Candidate | null = null;
+    for (let inp of ordered) {
+        const tryFit = (cand: LabelInput): Candidate | null => {
+            const w = textWidth(cand.text, cand.size, cand.tracking) + badgeAdvance(cand);
+            for (const c of candidatesFor(cand)) {
+                let box = boxAt(c.x, c.y, w, cand.size, c.anchor);
+                if (cand.rotate) box = rotatedAABB(box, c.x, c.y, cand.rotate);
+                if (!cand.inMargin && !insideFrame(box, frame)) continue;
+                if (boxes.some((b) => overlaps(box, b))) continue;
+                boxes.push(box);
+                return c;
+            }
+            return null;
+        };
 
-        for (const c of cands) {
-            let box = boxAt(c.x, c.y, w, inp.size, c.anchor);
-            if (inp.rotate) box = rotatedAABB(box, c.x, c.y, inp.rotate);
-            if (!inp.inMargin && !insideFrame(box, frame)) continue;
-            if (boxes.some((b) => overlaps(box, b))) continue;
-            chosen = c;
-            boxes.push(box);
-            break;
+        let chosen = tryFit(inp);
+
+        // First retry: keep the name but look further afield. The point search
+        // radiates well past the area nudges and draws a leader, so a name that
+        // had to move off its centre still says what it belongs to. This is the
+        // only retry a `nameRequired` label gets before being forced.
+        if (!chosen && inp.kind === "area") {
+            const roaming: LabelInput = { ...inp, kind: "point", textAnchor: undefined };
+            const c = tryFit(roaming);
+            if (c) {
+                inp = roaming;
+                chosen = c;
+            }
+        }
+
+        // Second retry: a badged label that still cannot fit falls back to the
+        // badge alone. The number is a fraction of the width of the name, and
+        // the gazetteer panel promises every number on the sheet can be looked
+        // up — dropping the feature would break that promise, a bare number does
+        // not. Labels marked `nameRequired` opt out: for those the name is the
+        // point, and something else has to give way instead.
+        if (!chosen && inp.badge && !inp.nameRequired) {
+            const bare: LabelInput = { ...inp, text: "", kind: "point", textAnchor: undefined };
+            const c = tryFit(bare);
+            if (c) {
+                inp = bare;
+                chosen = c;
+            }
         }
 
         if (!chosen) {
-            if (inp.allowDrop ?? true) {
+            if ((inp.allowDrop ?? true) && !inp.nameRequired) {
                 dropped++;
                 continue;
             }
             // forced placement at the ideal spot
             const anchor = inp.textAnchor ?? "middle";
+            const w = textWidth(inp.text, inp.size, inp.tracking) + badgeAdvance(inp);
             let box = boxAt(inp.anchor[0], inp.anchor[1], w, inp.size, anchor);
             if (inp.rotate) box = rotatedAABB(box, inp.anchor[0], inp.anchor[1], inp.rotate);
             boxes.push(box);
@@ -230,7 +310,7 @@ export function placeLabels(
             x: chosen.x,
             y: chosen.y,
             finalAnchor: chosen.anchor,
-            leader: chosen.leader,
+            leader: inp.noLeader ? undefined : chosen.leader,
         });
     }
 
