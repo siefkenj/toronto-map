@@ -562,31 +562,54 @@ function paperAndVignette(W: number, H: number): string {
  * neighbourhoods (whose centroid can fall outside the polygon entirely), so
  * sample the outline instead. Memoised — this runs over every neighbourhood.
  */
+/** Which former borough contains a single lon/lat point. */
+function boroughAtPoint(pt: [number, number]): string | null {
+    for (const r of level8.features) {
+        if (!isPolygonal(r)) continue;
+        const rg = r.geometry as Polygon | MultiPolygon;
+        const polys = rg.type === "Polygon" ? [rg.coordinates] : rg.coordinates;
+        if (polys.some((poly) => pointInPolygon(pt, poly))) return (r.properties?.name as string) || null;
+    }
+    return null;
+}
+
 const boroughCache = new Map<Feature, string>();
+/**
+ * Which former borough a neighbourhood belongs to, by majority vote of sample
+ * points taken INSIDE it.
+ *
+ * The vote used to be over the neighbourhood's outline instead, which gets the
+ * answer wrong wherever a neighbourhood abuts a borough line: its edge vertices
+ * sit ON that line, so roughly half of them test as the borough next door. Seven
+ * neighbourhoods lying wholly inside Etobicoke — Kingsway South, Stonegate-
+ * Queensway, Edenbridge-Humber Valley among them — were washed as York, North
+ * York or Old Toronto, which dragged Etobicoke's apparent edge well west of the
+ * Humber. Sampling the interior asks the question the wash is actually posing:
+ * which borough does most of this neighbourhood lie in.
+ *
+ * Memoised — this runs over every neighbourhood.
+ */
 function boroughOfNeighbourhood(f: Feature): string {
-    let hit = boroughCache.get(f);
+    const hit = boroughCache.get(f);
     if (hit) return hit;
     const g = f.geometry as Polygon | MultiPolygon;
-    const rings = g.type === "Polygon" ? [g.coordinates[0]] : g.coordinates.map((p) => p[0]);
-    const votes = new Map<string, number>();
-    for (const ring of rings) {
-        const step = Math.max(1, Math.floor(ring.length / 24));
-        for (let i = 0; i < ring.length; i += step) {
-            const pt = ring[i] as [number, number];
-            let name = "Old Toronto";
-            for (const r of level8.features) {
-                if (!isPolygonal(r)) continue;
-                const rg = r.geometry as Polygon | MultiPolygon;
-                const polys = rg.type === "Polygon" ? [rg.coordinates] : rg.coordinates;
-                if (polys.some((poly) => pointInPolygon(pt, poly))) {
-                    name = (r.properties?.name as string) || "Old Toronto";
-                    break;
-                }
-            }
-            votes.set(name, (votes.get(name) ?? 0) + 1);
-        }
+    const polys = g.type === "Polygon" ? [g.coordinates] : g.coordinates;
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const poly of polys) for (const p of poly[0]) {
+        x0 = Math.min(x0, p[0]); x1 = Math.max(x1, p[0]);
+        y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]);
     }
-    let best = "Old Toronto", bestN = -1;
+    const N = 18;
+    const votes = new Map<string, number>();
+    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+        const pt: [number, number] = [x0 + ((i + 0.5) / N) * (x1 - x0), y0 + ((j + 0.5) / N) * (y1 - y0)];
+        if (!polys.some((poly) => pointInPolygon(pt, poly))) continue;
+        const name = boroughAtPoint(pt) ?? "Old Toronto";
+        votes.set(name, (votes.get(name) ?? 0) + 1);
+    }
+    // a sliver too thin for the grid to land in falls back to its own centre
+    let best = votes.size ? "" : (boroughAtPoint(simpleCenter(g.coordinates)) ?? "Old Toronto");
+    let bestN = -1;
     for (const [k, n] of votes) if (n > bestN) { bestN = n; best = k; }
     boroughCache.set(f, best);
     return best;

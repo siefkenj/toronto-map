@@ -19,11 +19,26 @@ const svgMarkup = renderTorontoMap(CANONICAL_RENDER);
 
 export default function DevMap() {
     const holderRef = useRef<HTMLDivElement>(null);
+    // Where the view was when the last instance was torn down, so a hot update
+    // does not throw you back to the opening position. Survives the update
+    // because Fast Refresh keeps hook state across one.
+    const viewRef = useRef<{ zoom: number; pan: { x: number; y: number } } | null>(null);
 
     useEffect(() => {
         const holder = holderRef.current;
-        const svg = holder?.querySelector<SVGSVGElement>("svg");
-        if (!holder || !svg) return;
+        if (!holder) return;
+
+        // The markup is injected here rather than through React's
+        // dangerouslySetInnerHTML, and that is load-bearing. React re-applies
+        // that prop on every re-render — JSX builds a new {__html} object each
+        // time, so it never compares equal to the last one — which tore out the
+        // <svg> that svg-pan-zoom had wrapped and left the map frozen until a
+        // reload. A hot update to the map code re-renders this component, so
+        // that was every edit. Owning the node here keeps the two apart: React
+        // renders an empty holder and never touches what is inside it.
+        holder.innerHTML = svgMarkup;
+        const svg = holder.querySelector<SVGSVGElement>("svg");
+        if (!svg) return;
 
         // Fill the container; svg-pan-zoom drives the viewBox transform.
         svg.setAttribute("width", "100%");
@@ -61,17 +76,25 @@ export default function DevMap() {
             if (!fitted && width > 0 && height > 0) {
                 instance.fit();
                 instance.center();
-                // Open zoomed in on the downtown core (rather than the geometric
-                // centre of the poster, which is empty north-Toronto suburbia).
-                const base = instance.getZoom();
-                instance.zoom(base * 5);
-                const sizes = instance.getSizes();
-                const rz = sizes.realZoom;
-                const a = defaultViewAnchor();
-                instance.pan({
-                    x: sizes.width / 2 - a.x * rz,
-                    y: sizes.height / 2 - a.y * rz,
-                });
+                const saved = viewRef.current;
+                if (saved) {
+                    // coming back from a hot update: hold the view the edit was
+                    // made from, which is the part of the map being worked on
+                    instance.zoom(saved.zoom);
+                    instance.pan(saved.pan);
+                } else {
+                    // Open zoomed in on the downtown core (rather than the geometric
+                    // centre of the poster, which is empty north-Toronto suburbia).
+                    const base = instance.getZoom();
+                    instance.zoom(base * 5);
+                    const sizes = instance.getSizes();
+                    const rz = sizes.realZoom;
+                    const a = defaultViewAnchor();
+                    instance.pan({
+                        x: sizes.width / 2 - a.x * rz,
+                        y: sizes.height / 2 - a.y * rz,
+                    });
+                }
                 fitted = true;
             }
         };
@@ -80,9 +103,26 @@ export default function DevMap() {
 
         return () => {
             ro.disconnect();
-            instance.destroy();
+            // Guarded: an exception thrown out of a cleanup would leave the route
+            // dead until a full reload, which is the failure this effect exists
+            // to avoid in the first place.
+            try {
+                if (fitted) viewRef.current = { zoom: instance.getZoom(), pan: instance.getPan() };
+            } catch {
+                // instance unusable; open at the default view next time
+            }
+            try {
+                instance.destroy();
+            } catch {
+                // nothing left to detach from
+            }
+            holder.innerHTML = "";
         };
-    }, []);
+        // Re-runs only when the markup itself differs — an edit that changes the
+        // map. Edits that leave the output identical (a comment, a rename)
+        // re-render the component but leave the SVG and the pan/zoom instance
+        // exactly as they were, so the view does not even flicker.
+    }, [svgMarkup]);
 
     return (
         <div className="app">
@@ -95,12 +135,8 @@ export default function DevMap() {
                     pre-rendered view →
                 </Link>
             </header>
-            <div
-                className="map-holder svg-map"
-                ref={holderRef}
-                // The renderer returns a self-contained SVG string; inject it as-is.
-                dangerouslySetInnerHTML={{ __html: svgMarkup }}
-            />
+            {/* Filled by the effect above, which owns everything inside it. */}
+            <div className="map-holder svg-map" ref={holderRef} />
         </div>
     );
 }
