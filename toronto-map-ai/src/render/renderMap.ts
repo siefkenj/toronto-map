@@ -26,7 +26,7 @@ import waterwaysRaw from "../assets/toronto-waterways.geojson.json";
 import islandParksRaw from "../assets/toronto-island-parks.geojson.json";
 import arterialsRaw from "../assets/toronto-arterials.geojson.json";
 
-import { BOROUGHS, GAZETTEER, POPULATION_YEAR, TORONTO, TOWNS, gazetteerEntry, type GazetteerEntry, type GazetteerKind } from "../data/gazetteer";
+import { BOROUGHS, GAZETTEER, INDEXED_PARKS, POPULATION_YEAR, TORONTO, TOWNS, gazetteerEntry, type GazetteerEntry, type GazetteerKind } from "../data/gazetteer";
 import {
     FERRY_ROUTES,
     LANDMARKS,
@@ -34,6 +34,7 @@ import {
     NEIGHBOURHOODS,
     PARK_LABELS,
     RIVER_LABELS,
+    type ParkLabel,
     SUPER_DISTRICTS,
 } from "../data/places";
 import {
@@ -51,7 +52,8 @@ import { pointInPolygon, simpleCenter } from "./geometry";
 import { depthContours } from "./bathymetry";
 import {
     badgeAdvance,
-    badgeGeometry,
+    badgePlacement,
+    badgeRoom,
     boxesOverlap,
     charAdvance,
     labelBox,
@@ -229,9 +231,19 @@ const PRIO = {
     harbour: 80,
     superDistrict: 74,
     river: 66,
+    // The landmarks outrank the neighbourhoods, which reads backwards for a
+    // poster about neighbourhoods and is deliberate. A landmark is a point: the
+    // museum is at one address, and its badge now sits on that address, so it
+    // needs the exact spot or nothing. A neighbourhood is an area whose anchor
+    // is a nominal centre, and it reads just as well a few millimetres over.
+    // Placed the other way round, the two downtown museums lost their names to
+    // neighbourhoods that did not need the ground.
+    landmarkIcon: 62,
     neighbourhood: 60,
+    // an indexed park is promised a number in the panel, so it outranks the
+    // parks that are only named — and the plain park names in turn yield to it
+    indexedPark: 58,
     park: 56,
-    landmarkIcon: 52,
     landmarkWater: 50,
     street: 44,
     highway: 30,
@@ -380,7 +392,7 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     const badgeOnly = new Set<string>();
     for (const p of mapLabels) {
         if (!p.badge) continue;
-        (p.text ? named : badgeOnly).add(p.id.replace(/^(?:nbhd|lm):/, ""));
+        (p.text ? named : badgeOnly).add(p.id.replace(/^(?:nbhd|lm|park):/, ""));
     }
     for (const n of inset.labelled) named.add(n);
     // the towns are laid out by their own packer, which never drops one
@@ -483,9 +495,16 @@ function defs(proj: Projection, _eastVec: Pt): string {
                 { id: "blob", x: "-60%", y: "-60%", width: "220%", height: "220%" },
                 el("feGaussianBlur", { in: "SourceGraphic", stdDeviation: 7 })
             ),
+            // The region is pinned to the object's own box. This filter emits pure
+            // noise — feTurbulence through a colour matrix, never composited back
+            // over its source — so on the default region it paints that noise over
+            // a box 10% larger than the shape, with a hard edge where the region
+            // stops. On the full-page rect that overhang falls off the canvas and
+            // never showed; on the inset panel it drew a faint grey band 50 px wide
+            // around the Downtown Core, with no fade to it.
             el(
                 "filter",
-                { id: "grain" },
+                { id: "grain", x: "0%", y: "0%", width: "100%", height: "100%" },
                 el("feTurbulence", {
                     type: "fractalNoise",
                     baseFrequency: "0.9",
@@ -831,11 +850,60 @@ function islandParksLayer(proj: Projection): string {
  *  curated places list, so an un-listed park stays an unlabelled green mass. */
 function bigParksLayer(proj: Projection): string {
     const out: string[] = [];
-    for (const fe of bigParks.features) {
+    for (const fe of [...bigParks.features, ...namedCoreParks()]) {
         const d = geomPathD(fe.geometry as Geometry, proj);
         if (d) out.push(el("path", { d, "fill-rule": "evenodd", fill: PALETTE.park, "fill-opacity": 0.85, stroke: PALETTE.parkEdge, "stroke-width": 0.5, "stroke-linejoin": "round" }));
     }
     return el("g", {}, out.join(""));
+}
+
+/**
+ * The downtown parks the big-map extract left out. That extract keeps green
+ * masses over about 20 hectares, which is most of the city but none of the
+ * small parks the old city is actually known for — Trinity Bellwoods, Christie
+ * Pits, Dufferin Grove, Allan Gardens — leaving their names and badges sitting
+ * on bare paper. The high-resolution core layer already carries them for the
+ * inset, so the big map borrows the ones the places list names: a park the
+ * sheet names is a park the sheet draws.
+ *
+ * Polygons already covered by the big extract (Cherry Beach) are skipped —
+ * drawing both would darken the overlap, since each path carries its own
+ * fill-opacity.
+ */
+function namedCoreParks(): Feature[] {
+    return parks.features.filter((fe) => {
+        const name = fe.properties?.name as string | undefined;
+        if (!name || !parkLabelFor(name)) return false;
+        const probe = firstVertex(fe.geometry as Geometry);
+        return !probe || !bigParks.features.some((b) => featureContains(b, probe));
+    });
+}
+
+/**
+ * Whether a polygon's OSM name and a places-list name are the same park. Either
+ * may prefix the other: OSM carries longer official names ("Cherry Beach Clarke
+ * Beach Park") and splits some parks in two ("Riverdale Park East"/"West").
+ */
+function samePark(osmName: string, listName: string): boolean {
+    return osmName === listName || osmName.startsWith(`${listName} `) || listName.startsWith(`${osmName} `);
+}
+
+/** The PARK_LABELS entry a polygon's OSM name belongs to, if any. */
+function parkLabelFor(osmName: string): ParkLabel | undefined {
+    return PARK_LABELS.find((d) => samePark(osmName, d.name));
+}
+
+function firstVertex(g: Geometry): Pt | undefined {
+    if (g.type === "Polygon") return g.coordinates[0]?.[0] as Pt | undefined;
+    if (g.type === "MultiPolygon") return g.coordinates[0]?.[0]?.[0] as Pt | undefined;
+    return undefined;
+}
+
+function featureContains(f: Feature, p: Pt): boolean {
+    const g = f.geometry as Geometry;
+    if (g.type === "Polygon") return pointInPolygon(p, g.coordinates);
+    if (g.type === "MultiPolygon") return g.coordinates.some((poly) => pointInPolygon(p, poly));
+    return false;
 }
 
 /** Sandy beaches (Woodbine, Cherry, Sunnyside, the island beaches, Bluffer's …).
@@ -1651,15 +1719,17 @@ function collectLabelInputs(proj: Projection, _eastVec: Pt): LabelInput[] {
             haloWidth: 3,
         }));
 
-    // big parks / green spaces (the parks layer itself is unnamed — see PARK_LABELS)
+    // big parks / green spaces (the parks layer itself is unnamed — see PARK_LABELS).
+    // The flagged ones carry an index dot; the rest are named and left at that.
     for (const d of PARK_LABELS)
         inputs.push(areaLabel(`park:${d.name}`, d.name, proj.project(d.at), {
+            badge: d.indexed ? badgeFor(d.name) : undefined,
             size: S.park.size,
             tracking: S.park.tracking,
             fill: S.park.fill,
             family: FONTS.italic,
             italic: true,
-            priority: d.priority ?? PRIO.park,
+            priority: d.priority ?? (d.indexed ? PRIO.indexedPark : PRIO.park),
             halo: PALETTE.paper,
             haloWidth: 3,
         }));
@@ -1792,16 +1862,20 @@ function areaLabel(
 function emitLabels(placed: PlacedLabel[]): string {
     const out: string[] = [];
     for (const p of placed) {
-        const adv = badgeAdvance(p);
+        const room = badgeRoom(p);
         let tx = p.x;
         let anchor = p.finalAnchor;
-        if (adv > 0 && !p.rotate) {
+        if (p.badge && !p.rotate) {
             // The placement engine reserved room for the badge inside the label's
             // box, so re-derive that box's left edge and lay the two out from it.
-            const w = textWidth(p.text, p.size, p.tracking) + adv;
+            // Only a left-hand badge pushes the name along; the other three sit
+            // clear of it, so the name keeps the whole width.
+            const textW = textWidth(p.text, p.size, p.tracking);
+            const w = textW + room.dx;
             const left = anchor === "start" ? p.x : anchor === "end" ? p.x - w : p.x - w / 2;
-            out.push(indexBadge(p.size, left, p.y, p.badge!));
-            tx = left + adv;
+            const textLeft = (p.badge.side ?? "left") === "left" ? left + room.dx : left;
+            out.push(indexBadge(p.size, textLeft, p.y, p.badge, textW));
+            tx = textLeft;
             anchor = "start";
         }
         // a badge-only fallback (see placeLabels) has nothing left to typeset
@@ -1833,6 +1907,9 @@ function emitLabels(placed: PlacedLabel[]): string {
 function badgeColour(kind: GazetteerKind): string {
     if (kind === "landmark") return PALETTE.accentRed;
     if (kind === "waterfront") return PALETTE.accentBlue;
+    // Parks take the green the park names are set in, so the dot reads as
+    // belonging to the green it sits on rather than as a third accent.
+    if (kind === "park") return PALETTE.parkLabel;
     // Neighbourhoods and towns are the numerous series — forty-eight and
     // eighteen of them — so a solid disc each turns the sheet into a field of
     // dots and pulls the eye off the map. They are drawn as a ring with the
@@ -1847,7 +1924,7 @@ function badgeColour(kind: GazetteerKind): string {
 /** The badge for a named feature, or undefined if it isn't in the index. */
 function badgeFor(name: string): LabelBadge | undefined {
     const e = gazetteerEntry(name);
-    return e ? { label: e.label, color: badgeColour(e.kind) } : undefined;
+    return e ? { label: e.label, color: badgeColour(e.kind), side: e.side } : undefined;
 }
 
 /**
@@ -1861,12 +1938,21 @@ const BADGE_WASH = "wash";
 const BADGE_WASH_OPACITY = 0.45;
 
 /**
- * A filled disc carrying the feature's gazetteer number. On the map this sits
- * just before the name; for landmarks it is also the marker, which is why it
- * takes the colour the dot would have had.
+ * A filled disc carrying the feature's gazetteer number. For landmarks it is
+ * also the marker, which is why it takes the colour the dot would have had.
+ *
+ * `textLeft`/`textW` describe the NAME the badge keys, and the badge is placed
+ * against it on whichever side the badge asks for (see badgePlacement).
  */
-function indexBadge(size: number, left: number, baseline: number, b: LabelBadge): string {
-    const { cx, cy, r } = badgeGeometry(size, left, baseline);
+function indexBadge(
+    size: number,
+    textLeft: number,
+    baseline: number,
+    b: LabelBadge,
+    textW = 0,
+    nameSize = size
+): string {
+    const { cx, cy, r, numSize, numBaseline } = badgePlacement(size, textLeft, textW, baseline, b, nameSize);
     // A pale badge is an outlined disc with the figure in ink; a saturated one is
     // filled, with the figure reversed out. Either way the ring keeps it legible
     // over whatever the map puts underneath.
@@ -1880,8 +1966,8 @@ function indexBadge(size: number, left: number, baseline: number, b: LabelBadge)
             stroke: pale ? PALETTE.ink : PALETTE.paper,
             "stroke-width": round(r * (pale ? 0.16 : 0.24)),
         }) +
-        text(cx, cy + r * 0.37, b.label, {
-            size: r * (b.label.length > 1 ? 1.04 : 1.16),
+        text(cx, numBaseline, b.label, {
+            size: numSize,
             fill: pale ? PALETTE.ink : PALETTE.paper,
             family: FONTS.serif,
             weight: 700,
@@ -2386,8 +2472,9 @@ function drawMunicipalities(layouts: MuniLayout[]): string {
             const adv = badgeAdvance({ size: S.size, badge: L.badge });
             const nameW = textWidth(L.name, S.size, S.tracking);
             const left = L.cx - (nameW + adv) / 2;
-            out.push(indexBadge(S.size, left, baseline, L.badge));
-            out.push(text(left + adv, baseline, L.name, {
+            const nameLeft = (L.badge.side ?? "left") === "left" ? left + adv : left;
+            out.push(indexBadge(S.size, nameLeft, baseline, L.badge, nameW));
+            out.push(text(nameLeft, baseline, L.name, {
                 size: S.size, fill: S.fill, family: FONTS.serif, weight: 500, tracking: S.tracking, anchor: "start",
                 halo: PALETTE.paper, haloId: "haloPaper",
             }));
@@ -2705,15 +2792,34 @@ function drawInset(
     // ---- labels: streets (small, repeated) + parks + landmarks, no overlap ----
     const labelInputs: LabelInput[] = [];
     pushStreetLabels(labelInputs, ip, near);
+    // The indexed parks carry their numbered badge here as well as on the big
+    // map — a reader working from the gazetteer should find the same number in
+    // whichever view holds the park. They are labelled from PARK_LABELS, not
+    // from the polygon layer, so the panel repeats the big map's wording and
+    // position exactly.
+    const insetParks = INDEXED_PARKS.filter((d) => inRegion(mainProj.project(d.at)));
+    // …which means the polygon layer must not name them a second time.
+    const namedByBadge = (n: string) => insetParks.some((d) => samePark(n, d.name));
     for (const fe of parkFeatures) {
         const name = (fe.properties?.name as string) ?? "";
         const lp = fe.properties?.labelPoint as LonLatTuple | undefined;
-        if (!name || !lp) continue;
+        if (!name || !lp || namedByBadge(name)) continue;
         const p = ip(lp);
         if (!near(p, -4)) continue;
         labelInputs.push(areaLabel(`inspk:${name}`, name, [p[0], p[1]], {
             size: 6.8, tracking: 0.2, fill: PALETTE.parkLabel, family: FONTS.italic, italic: true,
             priority: 42, halo: PALETTE.park, haloWidth: 2,
+        }));
+    }
+    // "ins:" prefix, like the landmarks below: it is what `insetLabelled` slices
+    // off to recover the name.
+    for (const d of insetParks) {
+        const p = ip(d.at);
+        if (!near(p, -4)) continue;
+        labelInputs.push(areaLabel(`ins:${d.name}`, d.name, p, {
+            badge: badgeFor(d.name),
+            size: 8.4, tracking: 0.2, fill: PALETTE.parkLabel, family: FONTS.italic, italic: true,
+            priority: PRIO.indexedPark, halo: PALETTE.park, haloWidth: 2.4,
         }));
     }
     const dotCandidates: Array<{ name: string; p: Pt; col: string }> = [];
@@ -2994,8 +3100,12 @@ const SIDE_HEAD_GAP = 26;
  */
 const NAME_GLOSS_GAP_EM = 1;
 
-/** Space between an entry's name and its parenthetical note, in em. */
-const NOTE_GAP_EM = 0.34;
+/**
+ * Space between a name and the parenthetical that follows it, in ems. A full em
+ * — an em space — so the population reads as a separate aside rather than as
+ * part of the name it trails.
+ */
+const NOTE_GAP_EM = 1;
 
 /** Word space used when setting the glosses, in em. See typesetText. */
 const WORD_SPACE_EM = 0.3;
@@ -3159,7 +3269,7 @@ function drawColumn(col: IndexItem[], x: number, y: number, size: number): strin
     const lead = size * 1.28;
     for (const item of col) {
         if (item.entry.label)
-            out.push(indexBadge(size, x, y, { label: item.entry.label, color: badgeColour(item.entry.kind) }));
+            out.push(indexBadge(size, x + item.adv, y, { label: item.entry.label, color: badgeColour(item.entry.kind) }));
         out.push(text(x + item.adv, y, item.entry.name, {
             size, fill: PALETTE.ink, family: FONTS.serif, weight: 600, tracking: 0.1, anchor: "start",
         }));
@@ -3513,6 +3623,7 @@ function legendBox(r: Rect): string {
     const rows: Array<[string, string]> = [
         ["nbadge", "Neighbourhood — see index"],
         ["lbadge", "Landmark — see index"],
+        ["pbadge", "Park — see index"],
         ["tbadge", "Surrounding town — see index"],
         ["swatch", "Former Borough"],
         ["line", "Principal Street"],
@@ -3529,11 +3640,18 @@ function legendBox(r: Rect): string {
         const gx = x + 18;
         if (kind === "swatch") out.push(el("rect", { x: gx, y: ry - 9, width: 18, height: 12, fill: PALETTE.regions["North York"], stroke: PALETTE.inkFaint, "stroke-width": 0.6 }));
         else if (kind === "line") out.push(el("path", { d: `M ${gx} ${ry - 3} L ${gx + 18} ${ry - 3}`, stroke: PALETTE.inkSoft, "stroke-width": 2 }));
-        else if (kind === "nbadge" || kind === "lbadge" || kind === "tbadge")
-            out.push(indexBadge(rowSize * 0.92, gx + 2, ry, {
-                label: kind === "nbadge" ? "7" : kind === "lbadge" ? "49" : "MI",
-                color: kind === "lbadge" ? PALETTE.accentRed : PALETTE.paper,
-            }));
+        else if (kind === "nbadge" || kind === "lbadge" || kind === "pbadge" || kind === "tbadge")
+            // badgePlacement measures from the NAME's left edge, so hand it the
+            // point that leaves the disc starting at gx + 2 as the row expects.
+            // The disc is drawn a little smaller than the row, so the row's own
+            // size goes separately — that is what the figure is centred against.
+            out.push(indexBadge(rowSize * 0.92, gx + 2 + rowSize * 0.92 * 1.5, ry, {
+                label: kind === "nbadge" ? "7" : kind === "lbadge" ? "49" : kind === "pbadge" ? "72" : "MI",
+                color:
+                    kind === "lbadge" ? PALETTE.accentRed
+                    : kind === "pbadge" ? PALETTE.parkLabel
+                    : PALETTE.paper,
+            }, 0, rowSize));
         else if (kind === "depth") out.push(el("path", { d: `M ${gx} ${ry - 5} q 4.5 6 9 0 t 9 0`, fill: "none", stroke: PALETTE.waterDeep, "stroke-width": 1, "stroke-opacity": 0.8 }));
         else out.push(el("rect", { x: gx, y: ry - 9, width: 18, height: 12, fill: PALETTE.water, stroke: PALETTE.waterDeep, "stroke-width": 0.6 }));
         out.push(text(gx + 28, ry, label, { size: rowSize, fill: PALETTE.ink, family: FONTS.serif, anchor: "start" }));

@@ -4,6 +4,13 @@
 // Labels are placed highest-priority first; each tries its ideal spot then a set
 // of candidate offsets; if nothing fits without colliding, the label is dropped
 // (when allowDrop) — guaranteeing no two placed labels overlap.
+//
+// A badged label tries a further set of positions FIRST: the four that put the
+// badge disc exactly on the feature's own point, with the name hung off one side
+// of it (see pinnedCandidates). The disc is a fraction of the width of the name,
+// so it will sit on a centre that the whole label could never fit on, and the
+// number then marks the place rather than merely accompanying it. Only when all
+// four are blocked does the label move off its centre as a unit, as before.
 
 import type { Pt } from "./svg";
 import { FACE_METRICS } from "./fontMetrics";
@@ -17,22 +24,102 @@ export interface LabelBadge {
     /** what is set inside the circle: an index number, or a town's initials */
     label: string;
     color: string;
+    /** which side of the name the circle sits on; defaults to "left" */
+    side?: BadgeSide;
 }
+
+/** Where a badge sits relative to the name it keys. */
+export type BadgeSide = "left" | "right" | "above" | "below";
 
 /** Badge circle radius and the gap after it, both as multiples of the font size. */
 const BADGE_R = 0.62;
 const BADGE_GAP = 0.26;
 
-/** Horizontal room the badge takes up ahead of the text, in label units. */
-export function badgeAdvance(inp: { size: number; badge?: LabelBadge }): number {
-    return inp.badge ? inp.size * (BADGE_R * 2 + BADGE_GAP) : 0;
+/** How much room a badge needs, and on which side, in label units. */
+export interface BadgeRoom {
+    /** extra width, on whichever side the badge takes */
+    dx: number;
+    /** extra height above the ascent, and below the descent */
+    top: number;
+    bottom: number;
 }
 
-/** Geometry of a label's badge, given the left edge of the whole label. */
-export function badgeGeometry(size: number, left: number, baseline: number): { cx: number; cy: number; r: number } {
+const NO_BADGE: BadgeRoom = { dx: 0, top: 0, bottom: 0 };
+
+export function badgeRoom(inp: { size: number; badge?: LabelBadge }): BadgeRoom {
+    if (!inp.badge) return NO_BADGE;
+    const d = inp.size * (BADGE_R * 2 + BADGE_GAP);
+    switch (inp.badge.side ?? "left") {
+        case "above": return { dx: 0, top: d, bottom: 0 };
+        case "below": return { dx: 0, top: 0, bottom: d };
+        default: return { dx: d, top: 0, bottom: 0 };   // left and right both sit beside
+    }
+}
+
+/** Horizontal room the badge takes up beside the text, in label units. */
+export function badgeAdvance(inp: { size: number; badge?: LabelBadge }): number {
+    return badgeRoom(inp).dx;
+}
+
+/**
+ * Cap height of this face as a fraction of its font size, measured off the
+ * rendered sheet: 48 digit badges average 0.656 em and 12 capital-initial badges
+ * 0.651 em, both sitting on their baseline. Digits and capitals are the same
+ * height here, so one constant serves for both.
+ */
+const BADGE_CAP = 0.653;
+
+export interface BadgePlacement {
+    cx: number;
+    cy: number;
+    r: number;
+    /** font size for the figure inside the circle */
+    numSize: number;
+    /** baseline the figure is set on */
+    numBaseline: number;
+}
+
+/**
+ * Where a badge's circle and its figure go, given the left edge and width of the
+ * NAME it keys and that name's baseline.
+ *
+ * Beside the name (left/right) the circle is centred on the name's CAP CENTRE
+ * LINE and the figure is centred in the circle — so the figure and the name's
+ * capitals share a centre. Setting the figure on the name's baseline instead is
+ * the obvious thing and looks wrong: the figure is about 0.72 of the name's size,
+ * so sharing a baseline puts its centre roughly 0.09 em low and the number reads
+ * as having slipped down out of its circle.
+ *
+ * Above or below there is no name alongside to match, so the figure is simply
+ * centred in its circle.
+ *
+ * `nameSize` is the size of the name being matched, which is not always the size
+ * the badge is drawn at — the legend sets its discs slightly smaller than its
+ * rows — so it is passed separately where the two differ.
+ */
+export function badgePlacement(
+    size: number,
+    textLeft: number,
+    textW: number,
+    baseline: number,
+    b: LabelBadge,
+    nameSize: number = size
+): BadgePlacement {
     const r = size * BADGE_R;
-    // centred on the text's optical middle rather than its baseline
-    return { cx: left + r, cy: baseline - size * 0.24, r };
+    const gap = size * BADGE_GAP;
+    const numSize = r * (b.label.length > 1 ? 1.04 : 1.16);
+    const half = (numSize * BADGE_CAP) / 2;
+    const centred = (cx: number, cy: number) => ({ cx, cy, r, numSize, numBaseline: cy + half });
+    switch (b.side ?? "left") {
+        case "above":
+            return centred(textLeft + textW / 2, baseline - size * 0.74 - gap - r);
+        case "below":
+            return centred(textLeft + textW / 2, baseline + size * 0.26 + gap + r);
+        case "right":
+            return centred(textLeft + textW + gap + r, baseline - (nameSize * BADGE_CAP) / 2);
+        default:
+            return centred(textLeft - gap - r, baseline - (nameSize * BADGE_CAP) / 2);
+    }
 }
 
 export interface LabelInput {
@@ -97,6 +184,16 @@ export interface Rect {
 const PAD = 1.9;
 
 /**
+ * Clearance beyond this counts as "open paper" — past it, one pinned side is no
+ * roomier than another in any way a reader would notice, and the side set in the
+ * data should decide. PREFERRED_SIDE_BONUS is what that stated preference is
+ * worth in pixels of clearance: enough to hold a near-tie, not enough to keep a
+ * name in a crowd when another side has real room.
+ */
+const MAX_CLEARANCE = 24;
+const PREFERRED_SIDE_BONUS = 6;
+
+/**
  * Advance width of one character in em, for `face` ("serif" | "italic" |
  * "display"). Measured from the real fonts by scripts/build-font-metrics.ts;
  * this used to be a five-bucket guess, which was tolerable for deciding roughly
@@ -121,12 +218,18 @@ function boxAt(
     y: number,
     w: number,
     size: number,
-    anchor: "start" | "middle" | "end"
+    anchor: "start" | "middle" | "end",
+    room: BadgeRoom = NO_BADGE
 ): Box {
     const ascent = size * 0.74;
     const descent = size * 0.26;
     const left = anchor === "start" ? x : anchor === "end" ? x - w : x - w / 2;
-    return { x0: left - PAD, y0: y - ascent - PAD, x1: left + w + PAD, y1: y + descent + PAD };
+    return {
+        x0: left - PAD,
+        y0: y - ascent - room.top - PAD,
+        x1: left + w + PAD,
+        y1: y + descent + room.bottom + PAD,
+    };
 }
 
 /** AABB of a box rotated by `deg` about (cx,cy). */
@@ -152,14 +255,22 @@ function rotatedAABB(b: Box, cx: number, cy: number, deg: number): Box {
 export function boxesOverlap(a: Box, b: Box): boolean {
     return !(a.x1 <= b.x0 || a.x0 >= b.x1 || a.y1 <= b.y0 || a.y0 >= b.y1);
 }
+
+/** Separation between two non-overlapping boxes; 0 if they touch or overlap. */
+function boxGap(a: Box, b: Box): number {
+    const dx = Math.max(0, b.x0 - a.x1, a.x0 - b.x1);
+    const dy = Math.max(0, b.y0 - a.y1, a.y0 - b.y1);
+    return Math.hypot(dx, dy);
+}
 function overlaps(a: Box, b: Box): boolean {
     return boxesOverlap(a, b);
 }
 
 /** Screen-space AABB actually occupied by an already-placed label. */
 export function labelBox(p: PlacedLabel): Box {
-    const w = textWidth(p.text, p.size, p.tracking) + badgeAdvance(p);
-    let box = boxAt(p.x, p.y, w, p.size, p.finalAnchor);
+    const room = badgeRoom(p);
+    const w = textWidth(p.text, p.size, p.tracking) + room.dx;
+    let box = boxAt(p.x, p.y, w, p.size, p.finalAnchor, room);
     if (p.rotate) box = rotatedAABB(box, p.x, p.y, p.rotate);
     return box;
 }
@@ -179,6 +290,45 @@ interface Candidate {
     y: number;
     anchor: "start" | "middle" | "end";
     leader?: [Pt, Pt];
+    /** side this candidate puts the badge on, overriding the input's own */
+    badgeSide?: BadgeSide;
+}
+
+/**
+ * Where the label's reference point has to go for the badge disc to land exactly
+ * on the anchor, with the name set off to `side`. Inverts badgePlacement, so the
+ * two must stay in step: each case here solves that function's case for the text
+ * position that puts (cx, cy) on the anchor, with the text anchored "start" so
+ * the label's left edge is the reference point.
+ */
+function pinnedCandidate(inp: LabelInput, side: BadgeSide, textW: number): Candidate {
+    const [ax, ay] = inp.anchor;
+    const s = inp.size;
+    const r = s * BADGE_R;
+    const gap = s * BADGE_GAP;
+    const half = (s * BADGE_CAP) / 2;
+    const at = (x: number, y: number): Candidate => ({ x, y, anchor: "start", badgeSide: side });
+    switch (side) {
+        case "right": return at(ax - textW - gap - r, ay + half);
+        case "above": return at(ax - textW / 2, ay + s * 0.74 + gap + r);
+        case "below": return at(ax - textW / 2, ay - s * 0.26 - gap - r);
+        default: return at(ax - r, ay + half);
+    }
+}
+
+/**
+ * The badge marks the feature, so the first thing tried is always to put the
+ * disc ON the feature and hang the name off it — the disc is small enough to sit
+ * on a centre that the whole label could never fit on. The four sides are tried
+ * in turn, the one set in the data first, and only when none of them clears its
+ * neighbours does placement fall back to moving the label as a unit.
+ */
+function pinnedCandidates(inp: LabelInput): Candidate[] {
+    if (!inp.badge || inp.rotate) return [];
+    const textW = textWidth(inp.text, inp.size, inp.tracking);
+    const preferred = inp.badge.side ?? "left";
+    const sides: BadgeSide[] = [preferred, ...(["left", "right", "above", "below"] as const).filter((s) => s !== preferred)];
+    return sides.map((s) => pinnedCandidate(inp, s, textW));
 }
 
 function candidatesFor(inp: LabelInput): Candidate[] {
@@ -186,9 +336,13 @@ function candidatesFor(inp: LabelInput): Candidate[] {
     if (inp.kind === "area") {
         const anchor = inp.textAnchor ?? "middle";
         const s = inp.size;
-        const out: Candidate[] = [{ x: ax, y: ay, anchor }];
-        // small nudges around the ideal centre
-        for (const r of [0.9, 1.8, 2.8]) {
+        const out: Candidate[] = [...pinnedCandidates(inp), { x: ax, y: ay, anchor }];
+        // Nudges around the ideal centre, nearest ring first. Pinning takes the
+        // exact centre for whichever label reaches it first, so the ones that
+        // follow lean on these rings much harder than they used to; a sparse set
+        // sends a label that misses by a little all the way out to the roaming
+        // search, which can strand it a kilometre from what it names.
+        for (const r of [0.9, 1.4, 1.8, 2.3, 2.8, 3.4]) {
             for (const [dx, dy] of [
                 [0, -1],
                 [0, 1],
@@ -203,7 +357,7 @@ function candidatesFor(inp: LabelInput): Candidate[] {
         return out;
     }
     // point label: sit beside the marker, radiating outward, with a leader
-    const out: Candidate[] = [];
+    const out: Candidate[] = pinnedCandidates(inp);
     const s = inp.size;
     const gap = 4;
     for (const r of [gap, gap + s, gap + s * 2.2, gap + s * 3.6]) {
@@ -227,6 +381,17 @@ function candidatesFor(inp: LabelInput): Candidate[] {
 }
 
 /**
+ * The same label with its badge moved to `side`. The resolved side is written
+ * back into the placed label, so everything downstream — the keep-out box, the
+ * drawing code — reads it from the badge as before and needs no notion of a
+ * candidate having chosen it.
+ */
+function withSide<T extends { size: number; badge?: LabelBadge }>(inp: T, side: BadgeSide | undefined): T {
+    if (!side || !inp.badge || inp.badge.side === side) return inp;
+    return { ...inp, badge: { ...inp.badge, side } };
+}
+
+/**
  * Place labels without overlap. `occupied` seeds fixed keep-out boxes
  * (decorative apparatus). Returns only the labels that were placed.
  */
@@ -243,12 +408,51 @@ export function placeLabels(
 
     for (let inp of ordered) {
         const tryFit = (cand: LabelInput): Candidate | null => {
-            const w = textWidth(cand.text, cand.size, cand.tracking) + badgeAdvance(cand);
-            for (const c of candidatesFor(cand)) {
-                let box = boxAt(c.x, c.y, w, cand.size, c.anchor);
+            const textW = textWidth(cand.text, cand.size, cand.tracking);
+            const fits = (c: Candidate): Box | null => {
+                // a pinned candidate carries its own side, and the badge takes
+                // its room from whichever side that is
+                const room = badgeRoom(withSide(cand, c.badgeSide));
+                let box = boxAt(c.x, c.y, textW + room.dx, cand.size, c.anchor, room);
                 if (cand.rotate) box = rotatedAABB(box, c.x, c.y, cand.rotate);
-                if (!cand.inMargin && !insideFrame(box, frame)) continue;
-                if (boxes.some((b) => overlaps(box, b))) continue;
+                if (!cand.inMargin && !insideFrame(box, frame)) return null;
+                if (boxes.some((b) => overlaps(box, b))) return null;
+                return box;
+            };
+            const cands = candidatesFor(cand);
+
+            // The pinned candidates all put the disc on the same point, so they
+            // are not a preference order but a choice of which way the name
+            // hangs off it. Take the one standing clearest of its neighbours
+            // rather than the first that merely fits — that is what keeps the
+            // name out of the surrounding labels, and it leaves the most room
+            // for whatever is placed after. The side set in the data still wins
+            // ties and near-ties, so hand-chosen sides are not quietly undone.
+            const pinned = cands
+                .filter((c) => c.badgeSide)
+                .map((c) => ({ c, box: fits(c) }))
+                .filter((z): z is { c: Candidate; box: Box } => z.box !== null);
+            if (pinned.length) {
+                const preferred = cand.badge?.side ?? "left";
+                let best = pinned[0];
+                let bestScore = -Infinity;
+                for (const z of pinned) {
+                    let clear = MAX_CLEARANCE;
+                    for (const b of boxes) clear = Math.min(clear, boxGap(z.box, b));
+                    const score = clear + (z.c.badgeSide === preferred ? PREFERRED_SIDE_BONUS : 0);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = z;
+                    }
+                }
+                boxes.push(best.box);
+                return best.c;
+            }
+
+            for (const c of cands) {
+                if (c.badgeSide) continue; // already tried, and none of them fit
+                const box = fits(c);
+                if (!box) continue;
                 boxes.push(box);
                 return c;
             }
@@ -292,8 +496,9 @@ export function placeLabels(
             }
             // forced placement at the ideal spot
             const anchor = inp.textAnchor ?? "middle";
-            const w = textWidth(inp.text, inp.size, inp.tracking) + badgeAdvance(inp);
-            let box = boxAt(inp.anchor[0], inp.anchor[1], w, inp.size, anchor);
+            const room = badgeRoom(inp);
+            const w = textWidth(inp.text, inp.size, inp.tracking) + room.dx;
+            let box = boxAt(inp.anchor[0], inp.anchor[1], w, inp.size, anchor, room);
             if (inp.rotate) box = rotatedAABB(box, inp.anchor[0], inp.anchor[1], inp.rotate);
             boxes.push(box);
             placed.push({
@@ -306,7 +511,7 @@ export function placeLabels(
         }
 
         placed.push({
-            ...inp,
+            ...withSide(inp, chosen.badgeSide),
             x: chosen.x,
             y: chosen.y,
             finalAnchor: chosen.anchor,

@@ -166,12 +166,6 @@ export const DESCRIPTIONS: Record<string, PlaceDescription> = {
         text: "A Midtown neighbourhood between Bathurst and Avenue Road, running north from Bloor Street to Dupont.",
         short: "Where Jane Jacobs and her neighbours killed the Spadina Expressway in 1971 — a fight that changed how North American cities plan roads.",
     },
-    "Trinity–Bellwoods": {
-        article: "Trinity-Bellwoods",
-        url: W + "Trinity-Bellwoods",
-        text: "An inner-city neighbourhood around its namesake park, with a large Portuguese and Brazilian community along Dundas West.",
-        short: "Built on the grounds of Trinity College, and home to the park that serves as the city’s default summer gathering place.",
-    },
     Parkdale: {
         article: "Parkdale, Toronto",
         url: W + "Parkdale,_Toronto",
@@ -643,6 +637,89 @@ export const DESCRIPTIONS: Record<string, PlaceDescription> = {
         article: "Highland Creek (Toronto)",
         url: W + "Highland_Creek_(Toronto)",
         text: "A meandering ravine river whose watershed lies almost entirely within Scarborough, emptying at the east end of the Bluffs.",
+    },
+
+    // ── Parks ──────────────────────────────────────────────────────────────
+    "Rouge National Urban Park": {
+        article: "Rouge National Urban Park",
+        url: W + "Rouge_National_Urban_Park",
+        text: "Canada’s first national urban park, 79.1 square kilometres of Carolinian forest, farmland and marsh at the city’s eastern edge.",
+        short: "Canada’s first national urban park, and at 79 square kilometres one of the largest urban parks in the world.",
+    },
+    "Scarborough Bluffs": {
+        article: "Scarborough Bluffs",
+        url: W + "Scarborough_Bluffs",
+        text: "An escarpment along the Scarborough shoreline rising as much as 90 metres above Lake Ontario, formed from sediment laid down at the end of the last ice age.",
+        short: "A wall of layered sediment up to 90 m high, a record of the last ice age that the lake is steadily eating away.",
+    },
+    "Morningside Park": {
+        article: "Morningside Park (Toronto)",
+        url: W + "Morningside_Park_(Toronto)",
+        text: "Toronto’s largest park, following Highland Creek through a wooded ravine in Scarborough.",
+        short: "The city’s largest park by area, following Highland Creek down a wooded Scarborough ravine.",
+        viaRedirect: true,
+    },
+    "Trinity Bellwoods Park": {
+        article: "Trinity Bellwoods Park",
+        url: W + "Trinity_Bellwoods_Park",
+        text: "A park on Queen Street West on the former grounds of Trinity College, whose gates still stand at the entrance, and the name the surrounding neighbourhood goes by.",
+        short: "The city’s default summer gathering place, on the former grounds of Trinity College — and the name of the neighbourhood grown up around it.",
+    },
+    "Christie Pits Park": {
+        article: "Christie Pits",
+        url: W + "Christie_Pits",
+        text: "A park in a former sand and gravel pit, site of the 1933 Christie Pits riot.",
+        short: "A park sunk in a former gravel pit, remembered for the 1933 riot that broke out at a baseball game there.",
+        viaRedirect: true,
+    },
+    "Allan Gardens": {
+        article: "Allan Gardens",
+        url: W + "Allan_Gardens",
+        text: "One of Toronto’s oldest parks, with a Victorian conservatory of six greenhouses under glass.",
+        short: "One of the oldest parks in the city, built around a Victorian glasshouse that stays warm all winter.",
+    },
+    "Riverdale Park": {
+        article: "Riverdale Park (Toronto)",
+        url: W + "Riverdale_Park_(Toronto)",
+        text: "A park in the Don Valley split into east and west halves by the river, the Don Valley Parkway and the rail corridor.",
+        short: "Two halves of one park either side of the Don, and the postcard view of the skyline from its slope.",
+        viaRedirect: true,
+    },
+    "Dufferin Grove Park": {
+        article: "Dufferin Grove Park",
+        url: W + "Dufferin_Grove_Park",
+        text: "A west-end park known for its community-run ovens, rink and farmers’ market.",
+        short: "A west-end park run largely by the people who use it, with bread ovens, a rink and a Thursday market.",
+    },
+    "Corktown Common": {
+        article: "Corktown Common",
+        url: W + "Corktown_Common",
+        text: "A park on the West Don Lands built atop a flood-protection landform that shields the eastern downtown from the Don.",
+        short: "A marsh and meadow on top of a flood berm — the earthwork that made the eastern downtown buildable.",
+    },
+    "Cherry Beach": {
+        article: "Cherry Beach",
+        url: W + "Cherry_Beach",
+        text: "A Port Lands beach on the Outer Harbour, officially Clarke Beach Park.",
+        short: "A Port Lands beach on the Outer Harbour, as much a place to hear music as to swim.",
+    },
+    "Sunnybrook Park": {
+        article: "Sunnybrook Park",
+        url: W + "Sunnybrook_Park",
+        text: "A large park in the West Don valley, part of a chain of connected parkland running through the ravine.",
+        short: "Stables, playing fields and bridle paths in the West Don valley, given to the city in 1928.",
+    },
+    "Edwards Gardens": {
+        article: "Edwards Gardens",
+        url: W + "Edwards_Gardens",
+        text: "A former estate garden at the head of the Wilket Creek ravine, now home to the Toronto Botanical Garden.",
+        short: "A former private estate at the head of the Wilket Creek ravine, now the Toronto Botanical Garden.",
+    },
+    "Downsview Park": {
+        article: "Downsview Park",
+        url: W + "Downsview_Park",
+        text: "A park on the former Canadian Forces Base Downsview, the first national urban park declared in Canada.",
+        short: "A park made from a decommissioned air base, still being built out around the runway it inherited.",
     },
 };
 

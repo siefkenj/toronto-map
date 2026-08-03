@@ -20,9 +20,9 @@
  * `text` otherwise so a missing short form degrades instead of blanking the row.
  */
 import { DESCRIPTIONS } from "./descriptions";
-import { LANDMARKS, MUNICIPALITIES, NEIGHBOURHOODS } from "./places";
+import { LANDMARKS, MUNICIPALITIES, NEIGHBOURHOODS, PARK_LABELS, type BadgeSide } from "./places";
 
-export type GazetteerKind = "neighbourhood" | "landmark" | "waterfront" | "municipality" | "borough";
+export type GazetteerKind = "neighbourhood" | "landmark" | "waterfront" | "park" | "municipality" | "borough";
 
 export interface GazetteerEntry {
     /** what is set inside the badge: "17" for the numbered series, "MI" for towns */
@@ -32,6 +32,8 @@ export interface GazetteerEntry {
     kind: GazetteerKind;
     /** parenthetical set after the name, before the gloss (towns: population) */
     note?: string;
+    /** which side of the name on the MAP the badge sits on (see ./places) */
+    side?: BadgeSide;
     /** one-line gloss for the panel */
     blurb: string;
 }
@@ -41,18 +43,33 @@ function blurbFor(name: string): string {
     return d?.short ?? d?.text ?? "";
 }
 
+/** The parks that carry a dot and an index entry, in the order they are declared. */
+export const INDEXED_PARKS = PARK_LABELS.filter((p) => p.indexed);
+
 /** The numbered series: everything drawn inside the map frame. */
 export const GAZETTEER: GazetteerEntry[] = [
     ...NEIGHBOURHOODS.map((d, i) => ({
         label: String(i + 1),
         name: d.name,
         kind: "neighbourhood" as const,
+        side: d.badge,
         blurb: blurbFor(d.name),
     })),
     ...LANDMARKS.map((d, i) => ({
         label: String(NEIGHBOURHOODS.length + i + 1),
         name: d.name,
         kind: (d.kind === "water" ? "waterfront" : "landmark") as GazetteerKind,
+        side: d.badge,
+        blurb: blurbFor(d.name),
+    })),
+    // Parks come last in the run. Only the flagged ones are here: the map names
+    // many more green spaces than it numbers, and a dot is a promise that the
+    // panel has something to say about the place (see ParkLabel.indexed).
+    ...INDEXED_PARKS.map((d, i) => ({
+        label: String(NEIGHBOURHOODS.length + LANDMARKS.length + i + 1),
+        name: d.name,
+        kind: "park" as const,
+        side: d.badge,
         blurb: blurbFor(d.name),
     })),
 ];
@@ -145,6 +162,15 @@ const TOWN_POPULATION: Record<string, number> = {
  * decimal is kept, because "8k" and "9k" would flatten villages that differ by
  * half again; over a million it switches to M rather than print "2,794k".
  */
+/**
+ * The parenthetical a name carries in the panel. The panel sets it an em space
+ * after the name (see NOTE_GAP_EM), which is what separates the two — the
+ * brackets then mark it as an aside rather than part of the name.
+ */
+function popNote(n: number): string {
+    return `(pop. ${popLabel(n)})`;
+}
+
 function popLabel(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 10_000) return `${Math.round(n / 1000)}k`;
@@ -159,7 +185,8 @@ export const TOWNS: GazetteerEntry[] = MUNICIPALITIES.map((m) => ({
     label: TOWN_CODES[m.name] ?? m.name.slice(0, 2).toUpperCase(),
     name: m.name,
     kind: "municipality" as const,
-    note: TOWN_POPULATION[m.name] === undefined ? undefined : `pop. ${popLabel(TOWN_POPULATION[m.name])}`,
+    side: m.badge,
+    note: TOWN_POPULATION[m.name] === undefined ? undefined : popNote(TOWN_POPULATION[m.name]),
     blurb: blurbFor(m.name),
 })).sort((a, b) => a.label.localeCompare(b.label, "en"));
 
@@ -173,7 +200,7 @@ export const TORONTO: GazetteerEntry = {
     label: "",
     name: "Toronto",
     kind: "borough",
-    note: `pop. ${popLabel(2794356)}`,
+    note: popNote(2794356),
     blurb:
         "Canada’s largest city and its financial capital, and the fourth largest in North America. The city itself is " +
         "younger than most of the places named on this sheet: on 1 January 1998 the province dissolved Metropolitan " +
@@ -201,7 +228,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "Old Toronto",
         kind: "borough",
-        note: `pop. ${popLabel(841236)}`,
+        note: popNote(841236),
         blurb:
             "The pre-1998 city: the Humber east to Victoria Park, the lake north to Hogg’s Hollow. Downtown, the harbour and the streetcar wards — the most people of the six, and the fastest growing.",
     },
@@ -209,7 +236,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "North York",
         kind: "borough",
-        note: `pop. ${popLabel(683511)}`,
+        note: popNote(683511),
         blurb:
             "Farm concessions until the war, then the towers of North York Centre: a downtown raised out in the suburbs by Mel Lastman over a quarter century as mayor.",
     },
@@ -217,7 +244,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "Scarborough",
         kind: "borough",
-        note: `pop. ${popLabel(630145)}`,
+        note: popNote(630145),
         blurb:
             "Named by Elizabeth Simcoe in 1793 for bluffs that recalled Yorkshire. Postwar apartment slabs on a township grid, and now the region’s great arrival city.",
     },
@@ -225,7 +252,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "Etobicoke",
         kind: "borough",
-        note: `pop. ${popLabel(376237)}`,
+        note: popNote(376237),
         blurb:
             "Wadoopikaang, “where the alders grow”, between the Humber and Etobicoke Creek: the lakeshore mill towns, postwar subdivisions, and Pearson.",
     },
@@ -233,7 +260,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "York",
         kind: "borough",
-        note: `pop. ${popLabel(146828)}`,
+        note: popNote(146828),
         blurb:
             "What was left of the old township once the others had taken their share, and the least well-off of the six: Weston, Mount Dennis, Eglinton West.",
     },
@@ -241,7 +268,7 @@ export const BOROUGHS: GazetteerEntry[] = [
         label: "",
         name: "East York",
         kind: "borough",
-        note: `pop. ${popLabel(116399)}`,
+        note: popNote(116399),
         blurb:
             "The last borough in Canada, which held the title until amalgamation rather than call itself a city. Brick semis, Leaside, and the east end of the Danforth.",
     },
