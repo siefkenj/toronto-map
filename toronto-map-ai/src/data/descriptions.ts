@@ -486,12 +486,6 @@ export const DESCRIPTIONS: Record<string, PlaceDescription> = {
         text: "A Bay Street arena, formerly the Air Canada Centre, home to the Maple Leafs and the Raptors.",
         short: "Home of the Maple Leafs and the Raptors, and the busiest arena in Canada — its two tenants between them sell out nearly every night of the winter.",
     },
-    "Ripley's Aquarium": {
-        article: "Ripley's Aquarium of Canada",
-        url: W + "Ripley's_Aquarium_of_Canada",
-        text: "A public aquarium southeast of the CN Tower holding over 20,000 specimens from more than 450 species.",
-        short: "Canada’s largest aquarium, whose ninety-six-metre moving walkway carries visitors through a shark tank of 5.7 million litres.",
-    },
     "City Hall & Nathan Phillips Sq.": {
         article: "Toronto City Hall",
         url: W + "Toronto_City_Hall",
@@ -522,12 +516,6 @@ export const DESCRIPTIONS: Record<string, PlaceDescription> = {
         text: "Canada's largest and most-visited museum, covering art, world culture and natural history on Bloor Street West.",
         short: "Canada’s largest museum, its collections running from dinosaurs to Chinese temple art behind Libeskind’s 2007 crystal.",
     },
-    "Art Gallery of Ontario": {
-        article: "Art Gallery of Ontario",
-        url: W + "Art_Gallery_of_Ontario",
-        text: "One of North America's largest art museums, on Dundas Street West in the Grange Park neighbourhood.",
-        short: "Holder of the world’s largest collection of Canadian art, in a building reworked by Frank Gehry, who grew up around the corner.",
-    },
     "St. Lawrence Market": {
         article: "St. Lawrence Market",
         url: W + "St._Lawrence_Market",
@@ -540,11 +528,17 @@ export const DESCRIPTIONS: Record<string, PlaceDescription> = {
         text: "A downtown shopping mall and office complex named for the Eaton's department store that once anchored it.",
         short: "The busiest shopping mall in North America, built in the 1970s over streets Eaton’s had been buying up for a century.",
     },
-    "Sankofa Square": {
+    "Sankofa Square (Yonge–Dundas)": {
         article: "Sankofa Square",
         url: W + "Sankofa_Square",
         text: "The public square at Yonge and Dundas, opened in 2002 and renamed from Yonge–Dundas Square in 2024.",
         short: "Toronto’s Times Square, renamed in 2024 after the Akan symbol for reclaiming what was lost.",
+    },
+    "Hanlan's Point Beach": {
+        article: "Hanlan's Point Beach",
+        url: W + "Hanlan's_Point_Beach",
+        text: "A clothing-optional beach on the west shore of Hanlan's Point, at the western end of the Toronto Islands. Nude bathing was legalised here by by-law in 1894, banned again in 1930, reinstated as a trial in 1999 and made permanent in 2002; the clothing-optional zone was extended to the whole beach in 2023.",
+        short: "Legally clothing-optional from 1894 until a 1930 by-law ended it, restored on trial in 1999 and permanently in 2002; Canada’s first Pride was a picnic held here in 1971.",
     },
     "Queen's Park": {
         article: "Queen's Park (Toronto)",

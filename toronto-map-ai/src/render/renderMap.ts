@@ -244,7 +244,6 @@ const PRIO = {
     // parks that are only named — and the plain park names in turn yield to it
     indexedPark: 58,
     park: 56,
-    landmarkWater: 50,
     street: 44,
     highway: 30,
 } as const;
@@ -358,9 +357,11 @@ export function renderTorontoMap(options: RenderOptions = {}): string {
     const artItems = arterials.features
         .filter((f) => f.geometry?.type === "MultiLineString")
         .map((f) => ({ name: (f.properties?.name as string) ?? "", chains: mergedChainsOf(f) }));
-    mapContent.push(curvedRoadLabels(proj, streetItems, { size: LABEL_STYLE.street.size, tracking: LABEL_STYLE.street.tracking ?? 1, fill: LABEL_STYLE.street.fill, weight: 500, italic: true }, frame as Rect, roadLabelKeepOut));
-    mapContent.push(curvedRoadLabels(proj, hwyItems, { size: 6, tracking: 0.8, fill: PALETTE.inkFaint, weight: 600, italic: false }, frame as Rect, roadLabelKeepOut));
-    mapContent.push(curvedRoadLabels(proj, artItems, { size: 4.6, tracking: 0.35, fill: PALETTE.inkFaint, weight: 400, italic: true, upper: false }, frame as Rect, roadLabelKeepOut));
+    // every drawn centreline, so a name can be steered off crossing its neighbours
+    const roadGrid = buildRoadGrid(proj, [streetItems, hwyItems, artItems]);
+    mapContent.push(curvedRoadLabels(proj, streetItems, { size: LABEL_STYLE.street.size, tracking: LABEL_STYLE.street.tracking ?? 1, fill: LABEL_STYLE.street.fill, weight: 500, italic: true }, frame as Rect, roadLabelKeepOut, roadGrid));
+    mapContent.push(curvedRoadLabels(proj, hwyItems, { size: 6, tracking: 0.8, fill: PALETTE.inkFaint, weight: 600, italic: false }, frame as Rect, roadLabelKeepOut, roadGrid));
+    mapContent.push(curvedRoadLabels(proj, artItems, { size: 4.6, tracking: 0.35, fill: PALETTE.inkFaint, weight: 400, italic: true, upper: false }, frame as Rect, roadLabelKeepOut, roadGrid));
     mapContent.push(emitLeaders(mapLabels));
     mapContent.push(emitLabels(mapLabels));
     // transit labels on top of the map labels (their boxes were reserved above)
@@ -1611,7 +1612,7 @@ function landmarkMarkers(proj: Projection, labelled: Set<string>): string {
         if (d.centeredLabel) continue;
         if (labelled.has(d.name)) continue;
         const p = proj.project(d.at);
-        const col = d.kind === "water" ? PALETTE.accentBlue : PALETTE.accentRed;
+        const col = PALETTE.accentRed;
         out.push(
             el("circle", { cx: p[0], cy: p[1], r: 2.2, fill: col, stroke: PALETTE.paper, "stroke-width": 0.7 })
         );
@@ -1779,7 +1780,7 @@ function collectLabelInputs(proj: Projection, _eastVec: Pt): LabelInput[] {
                 tracking: S.landmark.tracking,
                 fill: S.landmark.fill,
                 family: FONTS.serif,
-                priority: PRIO.landmarkWater,
+                priority: PRIO.landmarkIcon,
                 halo: PALETTE.paper,
                 haloWidth: 2.4,
             }));
@@ -1796,7 +1797,7 @@ function collectLabelInputs(proj: Projection, _eastVec: Pt): LabelInput[] {
             tracking: S.landmark.tracking,
             fill: S.landmark.fill,
             family: FONTS.serif,
-            priority: d.kind === "water" ? PRIO.landmarkWater : PRIO.landmarkIcon,
+            priority: PRIO.landmarkIcon,
             halo: PALETTE.paper,
             haloWidth: 2.4,
         });
@@ -1906,7 +1907,6 @@ function emitLabels(placed: PlacedLabel[]): string {
  */
 function badgeColour(kind: GazetteerKind): string {
     if (kind === "landmark") return PALETTE.accentRed;
-    if (kind === "waterfront") return PALETTE.accentBlue;
     // Parks take the green the park names are set in, so the dot reads as
     // belonging to the green it sits on rather than as a third accent.
     if (kind === "park") return PALETTE.parkLabel;
@@ -1993,20 +1993,6 @@ function emitLeaders(placed: PlacedLabel[]): string {
     return el("g", {}, out.join(""));
 }
 
-function longestOf(chains: LonLatTuple[][] | Position[][]): Position[] | null {
-    let best: Position[] | null = null;
-    let bestLen = 0;
-    for (const line of chains) {
-        let len = 0;
-        for (let i = 1; i < line.length; i++)
-            len += Math.hypot(line[i][0] - line[i - 1][0], line[i][1] - line[i - 1][1]);
-        if (len > bestLen) {
-            bestLen = len;
-            best = line as Position[];
-        }
-    }
-    return best;
-}
 /** Point at arc-length `d` along a projected polyline with cumulative lengths. */
 function pointAtArc(pts: Pt[], cum: number[], d: number): Pt {
     if (d <= 0) return pts[0];
@@ -2042,38 +2028,230 @@ interface CurvedLabelStyle { size: number; tracking: number; fill: string; weigh
  * (streets, then highways) don't collide. Used for streets AND highways so the
  * curved treatment is uniform across every road.
  */
+/**
+ * Sag at which a road name stops following its road, as a fraction of the name's
+ * width. A window sagging this much is not a curve but a bend: a semicircle of
+ * the same arc length sags about a third of its width, a right-angle corner
+ * about a tenth. Everything on this sheet lands decisively on one side or the
+ * other — 112 of the 120 road names are drawn dead straight already, and the
+ * eight that curve are all crescents and loops bending more than 100°.
+ */
+const HORSESHOE_SAG = 0.16;
+
+/** …and the swing, in degrees, at which the same applies (see tangentSwing). */
+const HORSESHOE_SWING = 60;
+
+/**
+ * Swing limits, in degrees, for the two good tiers of the window search: what
+ * still counts as a flat run of road, and what counts as a gradual curve the
+ * name can follow. Above the second the road is bending too hard to letter along
+ * and the search has to settle for whatever is flattest.
+ */
+const FLAT_SWING = 12;
+const GRADUAL_SWING = 45;
+
+/**
+ * How far past each end of a road its name may run, as a fraction of the name's
+ * width. Tier 2: when no flat stretch inside the road is long enough, the word
+ * is allowed to overhang the corner rather than be bent round it.
+ */
+const OVERHANG_MAX = 0.3;
+
+/**
+ * What a road name will trade, in pixels of distance from its road's midpoint,
+ * to buy one glyph-box clear of a crossing road, and to hang one pixel off the
+ * end of its road. Both are bounded on purpose: the midpoint is the default and
+ * these only bend it.
+ */
+const CROSS_PENALTY = 25;
+/**
+ * Overhang is priced steeply against crossings on purpose. A road chopped into
+ * fragments hands the labeller a stub — Guildwood Parkway's longest single chain
+ * is 31px against a name needing 51 — and every window on a stub overhangs, so
+ * this is the only term separating them. Cheap, it slid the name off the west
+ * end to dodge a crossing; dear, it keeps as much of the word over road as the
+ * stub allows.
+ */
+const OVERHANG_PENALTY = 14;
+
+/**
+ * A coarse grid over every road centreline the sheet draws, so a candidate label
+ * window can be asked the one question the placement never used to consider:
+ * does the name lie across another road? Keyed by name, so a road's own line —
+ * which the name necessarily sits along — does not count against it.
+ */
+interface RoadGrid {
+    crosses(b: Box, owner: string): boolean;
+}
+
+function buildRoadGrid(proj: Projection, groups: { name: string; chains: LonLatTuple[][] }[][]): RoadGrid {
+    const CELL = 24;
+    const cells = new Map<number, { x0: number; y0: number; x1: number; y1: number; owner: string }[]>();
+    const key = (cx: number, cy: number) => cx * 100000 + cy;
+    for (const items of groups) {
+        for (const it of items) {
+            if (!it.name) continue;
+            for (const chain of it.chains) {
+                const ps = chain.map((p) => proj.project(p));
+                for (let i = 1; i < ps.length; i++) {
+                    const seg = { x0: ps[i - 1][0], y0: ps[i - 1][1], x1: ps[i][0], y1: ps[i][1], owner: it.name };
+                    const cx0 = Math.floor(Math.min(seg.x0, seg.x1) / CELL);
+                    const cx1 = Math.floor(Math.max(seg.x0, seg.x1) / CELL);
+                    const cy0 = Math.floor(Math.min(seg.y0, seg.y1) / CELL);
+                    const cy1 = Math.floor(Math.max(seg.y0, seg.y1) / CELL);
+                    // A long segment spanning many cells is registered in each of
+                    // them by bounding box, which over-reports for a diagonal —
+                    // harmless, since the exact clip below is the real test.
+                    for (let cx = cx0; cx <= cx1; cx++)
+                        for (let cy = cy0; cy <= cy1; cy++) {
+                            const k = key(cx, cy);
+                            const list = cells.get(k);
+                            if (list) list.push(seg);
+                            else cells.set(k, [seg]);
+                        }
+                }
+            }
+        }
+    }
+    return {
+        crosses(b, owner) {
+            for (let cx = Math.floor(b.x0 / CELL); cx <= Math.floor(b.x1 / CELL); cx++)
+                for (let cy = Math.floor(b.y0 / CELL); cy <= Math.floor(b.y1 / CELL); cy++) {
+                    const list = cells.get(key(cx, cy));
+                    if (!list) continue;
+                    for (const s of list) if (s.owner !== owner && segHitsBox(s, b)) return true;
+                }
+            return false;
+        },
+    };
+}
+
+/** Liang–Barsky: does the segment touch the box at all? */
+function segHitsBox(s: { x0: number; y0: number; x1: number; y1: number }, b: Box): boolean {
+    const dx = s.x1 - s.x0;
+    const dy = s.y1 - s.y0;
+    let t0 = 0;
+    let t1 = 1;
+    const clip = (p: number, q: number): boolean => {
+        if (p === 0) return q >= 0;
+        const r = q / p;
+        if (p < 0) {
+            if (r > t1) return false;
+            if (r > t0) t0 = r;
+        } else {
+            if (r < t0) return false;
+            if (r < t1) t1 = r;
+        }
+        return true;
+    };
+    return (
+        clip(-dx, s.x0 - b.x0) && clip(dx, b.x1 - s.x0) &&
+        clip(-dy, s.y0 - b.y0) && clip(dy, b.y1 - s.y0)
+    );
+}
+
+/**
+ * How far a road name would have to swing to follow its road, in degrees:
+ * unwrapped, so a bend past half a turn reads as more than 180 rather than
+ * folding back, and taken over the whole window rather than end to end, so an
+ * S-bend that returns to its starting direction still counts as two bends.
+ * Sag alone misses those — Huntsmill Boulevard turns through 172° while staying
+ * close to its own chord.
+ */
+function tangentSwing(ps: Pt[]): number {
+    let a: number | null = null;
+    let prev = 0;
+    let lo = 0;
+    let hi = 0;
+    for (let i = 1; i < ps.length; i++) {
+        const dx = ps[i][0] - ps[i - 1][0];
+        const dy = ps[i][1] - ps[i - 1][1];
+        if (!dx && !dy) continue;
+        const th = Math.atan2(dy, dx);
+        if (a === null) {
+            a = 0;
+        } else {
+            let d = th - prev;
+            while (d > Math.PI) d -= 2 * Math.PI;
+            while (d < -Math.PI) d += 2 * Math.PI;
+            a += d;
+            lo = Math.min(lo, a);
+            hi = Math.max(hi, a);
+        }
+        prev = th;
+    }
+    return a === null ? 0 : ((hi - lo) * 180) / Math.PI;
+}
+
+/** Centre of mass of a polyline's vertices. */
+function centroidOf(ps: Pt[]): Pt {
+    let x = 0;
+    let y = 0;
+    for (const p of ps) {
+        x += p[0];
+        y += p[1];
+    }
+    return [x / ps.length, y / ps.length];
+}
+
+/**
+ * Direction of a point set's long axis — the principal axis of its covariance.
+ * Unlike the chord between the first and last point this stays meaningful when
+ * the two ends meet, which is exactly the case it is needed for.
+ */
+function longAxis(ps: Pt[]): Pt {
+    const [mx, my] = centroidOf(ps);
+    let sxx = 0;
+    let sxy = 0;
+    let syy = 0;
+    for (const p of ps) {
+        const dx = p[0] - mx;
+        const dy = p[1] - my;
+        sxx += dx * dx;
+        sxy += dx * dy;
+        syy += dy * dy;
+    }
+    const th = 0.5 * Math.atan2(2 * sxy, sxx - syy);
+    return [Math.cos(th), Math.sin(th)];
+}
+
 function curvedRoadLabels(
     proj: Projection,
     items: { name: string; chains: LonLatTuple[][] }[],
     style: CurvedLabelStyle,
     frame: Rect,
-    occupied: Box[]
+    occupied: Box[],
+    roads?: RoadGrid
 ): string {
     const inFrame = (x: number, y: number) => x >= frame.x && x <= frame.x + frame.w && y >= frame.y && y <= frame.y + frame.h;
     const { size, tracking, fill, weight, italic } = style;
     // perpendicular baseline offset so glyph + glow clear the road line
     const off = size * (1.15 / 3);
     const texts: string[] = [];
-    // longest roads first, so trunk roads win the good positions
+    // Longest roads first, so trunk roads win the good positions — measured by
+    // how much road there is, not by how many vertices were used to draw it.
+    //
+    // Every chain of a road is offered to the search, not just its longest. The
+    // longest is the wrong one surprisingly often: a road that survives as a few
+    // fragments can have most of its arc coiled into a crescent at one end, and
+    // Guildwood Parkway was labelled along a 69px loop while its straight run lay
+    // in a different chain the labeller never saw.
+    const arcOf = (ps: Pt[]) => ps.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - ps[i - 1][0], p[1] - ps[i - 1][1]) : 0), 0);
     const feats = items
-        .map((it) => ({ it, line: longestOf(it.chains) }))
-        .filter((o) => o.line && o.line.length >= 2)
-        .sort((a, b) => (b.line!.length) - (a.line!.length));
-    for (const { it, line } of feats) {
+        .map((it) => ({ it, lines: it.chains.filter((c) => c.length >= 2).map((c) => c.map((p) => proj.project(p))) }))
+        .filter((o) => o.lines.length > 0)
+        .map((o) => ({ ...o, total: o.lines.reduce((s, ps) => s + arcOf(ps), 0) }))
+        .sort((a, b) => b.total - a.total);
+    for (const { it, lines } of feats) {
         const name = (style.upper ?? true) ? it.name.toUpperCase() : it.name;
         if (!name) continue;
-        const pts = (line as LonLatTuple[]).map((p) => proj.project(p));
-        const cum = [0];
-        for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
-        const L = cum[cum.length - 1];
         const w = textWidth(name, size, tracking);
         const need = w + 6;
-        if (L < need + 4) continue;
-        // Search windows from the road's middle outward. Prefer the flattest spot
-        // (lowest curvature); if none is straight enough, fall back to the least
-        // curved found and rely on adaptive kerning below to stop overlaps.
         const half = need / 2;
-        const stepC = Math.max(12, w * 0.3);
+        // A road shorter than its own name can still be labelled by letting the
+        // name run past the ends (tier 2 below); shorter than this and there is
+        // not enough road left under the word to be worth it.
+        const overMax = need * OVERHANG_MAX;
         const devOf = (wp: Pt[]): number => {
             const ex = wp[wp.length - 1][0] - wp[0][0], ey = wp[wp.length - 1][1] - wp[0][1];
             const c2 = ex * ex + ey * ey || 1;
@@ -2084,44 +2262,131 @@ function curvedRoadLabels(
             }
             return dev;
         };
-        type Cand = { dS: number; dE: number; rev: boolean; boxes: Box[]; dev: number };
-        let chosen: Cand | null = null;
-        let fallback: Cand | null = null;
-        outer:
-        for (let d0 = 0; d0 <= L / 2 + stepC; d0 += stepC) {
-            for (const c of d0 === 0 ? [L / 2] : [L / 2 - d0, L / 2 + d0]) {
+        type Cand = {
+            dS: number; dE: number; rev: boolean; boxes: Box[];
+            dev: number; swing: number; over: number; central: number;
+            /** filled in on demand — see crossOf */
+            cross: number | null;
+            /** +1 = the name sits on the usual side of the line, -1 = the other */
+            sideSign: 1 | -1;
+            pts: Pt[]; cum: number[]; L: number; at: (a: number) => Pt;
+        };
+        const cands: Cand[] = [];
+        // Scan each chain at about one step per glyph. The old scan stepped a
+        // third of the word at a time from the middle out and stopped at the first
+        // window flat enough, which on a road with one good straight and a lot of
+        // bend would walk straight past the straight.
+        const stepC = Math.max(3, size * 0.8);
+        for (const pts of lines) {
+            const cum = [0];
+            for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+            const L = cum[cum.length - 1];
+            if (L < need - 2 * overMax) continue;
+            /** point at arc distance `a`, extrapolated along the end tangent past either end */
+            const at = (a: number): Pt => {
+                if (a >= 0 && a <= L) return pointAtArc(pts, cum, a);
+                const [p, q, d] = a < 0 ? [pts[0], pts[1], a] : [pts[pts.length - 1], pts[pts.length - 2], a - L];
+                const [tx, ty] = unit([p[0] - q[0], p[1] - q[1]]);
+                return [p[0] + tx * Math.abs(d), p[1] + ty * Math.abs(d)];
+            };
+            for (let c = -overMax + half; c <= L + overMax - half + 1e-6; c += stepC) {
                 const dS = c - half, dE = c + half;
-                if (dS < 3 || dE > L - 3) continue;
-                const wp = subPolyline(pts, cum, dS, dE);
+                const over = Math.max(0, -dS) + Math.max(0, dE - L);
+                const nS = Math.max(6, Math.ceil((dE - dS) / size));
+                const wp: Pt[] = [];
+                for (let k = 0; k <= nS; k++) wp.push(at(dS + ((dE - dS) * k) / nS));
                 const dev = devOf(wp);
+                const swing = tangentSwing(wp);
                 const rev = wp[wp.length - 1][0] - wp[0][0] < 0;
                 // collision boxes on the offset side; also require them inside frame
                 const boxes: Box[] = [];
                 let ok = true;
                 const nB = Math.max(2, Math.ceil((dE - dS) / (size * 0.9)));
-                for (let k = 0; k <= nB && ok; k++) {
-                    const a = dS + ((dE - dS) * k) / nB;
-                    const [x, y] = pointAtArc(pts, cum, a);
-                    const [ax, ay] = pointAtArc(pts, cum, Math.max(0, a - 1));
-                    const [bx, by] = pointAtArc(pts, cum, Math.min(L, a + 1));
-                    let [tx, ty] = unit([bx - ax, by - ay]);
-                    if (rev) { tx = -tx; ty = -ty; }
-                    const ox = x + ty * off, oy = y - tx * off;
-                    if (!inFrame(ox, oy)) { ok = false; break; }
-                    boxes.push({ x0: ox - size * 0.6, y0: oy - size * 0.7, x1: ox + size * 0.6, y1: oy + size * 0.7 });
+                // A name may sit on either side of its centreline. Only one side
+                // used to be tried, so a stretch of road whose usual side was
+                // taken counted as no road at all — which is how Guildwood
+                // Parkway ended up on a stub, its straight run being spoken for
+                // by the Guildwood neighbourhood label sitting above it.
+                for (const sideSign of [1, -1] as const) {
+                    boxes.length = 0;
+                    ok = true;
+                    for (let k = 0; k <= nB && ok; k++) {
+                        const a = dS + ((dE - dS) * k) / nB;
+                        const [x, y] = at(a);
+                        const [ax, ay] = at(a - 1);
+                        const [bx, by] = at(a + 1);
+                        let [tx, ty] = unit([bx - ax, by - ay]);
+                        if (rev) { tx = -tx; ty = -ty; }
+                        const ox = x + ty * off * sideSign, oy = y - tx * off * sideSign;
+                        if (!inFrame(ox, oy)) { ok = false; break; }
+                        boxes.push({ x0: ox - size * 0.6, y0: oy - size * 0.7, x1: ox + size * 0.6, y1: oy + size * 0.7 });
+                    }
+                    if (!ok || boxes.some((b) => occupied.some((o) => boxesOverlap(b, o)))) continue;
+                    cands.push({ dS, dE, rev, boxes: boxes.slice(), dev, swing, cross: null, over, central: Math.abs(c - L / 2), sideSign, pts, cum, L, at });
                 }
-                if (!ok || boxes.some((b) => occupied.some((o) => boxesOverlap(b, o)))) continue;
-                const cand: Cand = { dS, dE, rev, boxes, dev };
-                if (!fallback || dev < fallback.dev) fallback = cand;
-                if (dev <= size * 0.5) { chosen = cand; break outer; } // genuinely flat — done
             }
         }
-        if (!chosen) chosen = fallback;
+
+        // Tiers, in the order a hand-letterer would try them: a flat run of the
+        // road with nothing else crossing it; the same allowing the word to poke
+        // off the end; a gentle curve; and failing all of that the flattest thing
+        // going, which is where the horseshoe rule below takes over.
+        const flat = (c: Cand) => c.dev <= size * 0.55 && c.swing <= FLAT_SWING;
+        const gradual = (c: Cand) => c.dev <= Math.max(size * 1.6, w * 0.06) && c.swing <= GRADUAL_SWING;
+        const best = (pool: Cand[], cost: (c: Cand) => number): Cand | null => {
+            let bc: Cand | null = null;
+            let bk = Infinity;
+            for (const c of pool) {
+                const k = cost(c);
+                if (k < bk) {
+                    bc = c;
+                    bk = k;
+                }
+            }
+            return bc;
+        };
+        // Everything is priced in pixels against distance from the road's middle,
+        // which is where a name belongs unless something drives it off. Crossing
+        // another road is worth a bounded detour, not any detour: ranked as a
+        // strict preference it walked every long arterial's name out to the thin
+        // suburban end of the road, where nothing crosses it and nobody is
+        // looking — Eglinton Avenue ended up labelled in Etobicoke.
+        // Counted only for the candidates a tier actually weighs. The scan offers
+        // hundreds per road and at most one is drawn, so asking the road grid
+        // about every one of them was the bulk of the search's cost.
+        const crossOf = (c: Cand): number => {
+            if (c.cross === null) c.cross = roads ? c.boxes.reduce((n, b) => n + (roads.crosses(b, it.name) ? 1 : 0), 0) : 0;
+            return c.cross;
+        };
+        const cost = (c: Cand) => crossOf(c) * CROSS_PENALTY + c.central + c.over * OVERHANG_PENALTY + (c.sideSign < 0 ? 2 : 0);
+        const chosen =
+            best(cands.filter((c) => c.over === 0 && flat(c)), cost) ??
+            best(cands.filter((c) => flat(c)), cost) ??
+            best(cands.filter((c) => gradual(c)), (c) => cost(c) + c.dev * 4) ??
+            best(cands, (c) => c.dev * 20 + c.central);
         if (!chosen) continue;
+        // the chain the winning window came from
+        const { pts, cum, L, at } = chosen;
+        const offS = off * chosen.sideSign;
         // Anything CLOSE to straight is drawn perfectly straight: bending text
         // along a nearly-straight road only makes it look unsteady. Only a window
         // whose sag exceeds this is worth curving + kerning.
-        const straightMode = chosen.dev <= Math.max(size * 1.1, w * 0.045);
+        const gentle = chosen.dev <= Math.max(size * 1.1, w * 0.045);
+        // …and past a point the curve is worth even less. A crescent, a close or
+        // a circle is often shorter end to end than its own name, so the window
+        // has to span the road's own bends and the name is bent right round with
+        // them: "Bridletowne Circle" came out as a horseshoe and "Guildwood
+        // Parkway" as very nearly a full ring. Those are set straight instead and
+        // allowed to overhang the road — a name that runs a little past the
+        // corner onto the next street is far easier to read than one the reader
+        // has to walk around.
+        // Resampled at about one point per glyph, so a single jittery centreline
+        // vertex cannot spike the measured swing the way a raw one would.
+        const swingPts: Pt[] = [];
+        const nSw = Math.max(4, Math.ceil((chosen.dE - chosen.dS) / size));
+        for (let k = 0; k <= nSw; k++) swingPts.push(at(chosen.dS + ((chosen.dE - chosen.dS) * k) / nSw));
+        const horseshoe = chosen.dev >= w * HORSESHOE_SAG || tangentSwing(swingPts) >= HORSESHOE_SWING;
+        const straightMode = gentle || horseshoe;
         occupied.push(...chosen.boxes);
         const chars = [...name];
         const advances = chars.map((c) => charAdvance(c, style.italic ? "italic" : "serif") * size);
@@ -2135,18 +2400,34 @@ function curvedRoadLabels(
         if (straightMode) {
             // low curvature: straight baseline along the window chord, so gentle
             // wiggles in the centreline don't wobble the text (e.g. Eglinton Ave.)
-            const [sx, sy] = pointAtArc(pts, cum, chosen.dS);
-            const [ex, ey] = pointAtArc(pts, cum, chosen.dE);
-            let [dx, dy] = unit([ex - sx, ey - sy]);
+            const [sx, sy] = at(chosen.dS);
+            const [ex, ey] = at(chosen.dE);
+            // On a horseshoe the two ends of the window sit near each other — on
+            // a closed loop, on top of each other — so the chord between them is
+            // short and its direction is noise. Read the long axis of the whole
+            // window instead, and hang the name off the window's centre of mass:
+            // for a crescent that is the middle of its sweep, which is where a
+            // reader looks for the name.
+            const wpts = swingPts;
+            let [dx, dy] = horseshoe ? longAxis(wpts) : unit([ex - sx, ey - sy]);
             if (dx < 0) { dx = -dx; dy = -dy; }
             const ang = angleDeg([dx, dy]);
             const nx = dy, ny = -dx; // "up" normal
-            const [mx, my] = pointAtArc(pts, cum, (chosen.dS + chosen.dE) / 2);
+            const [mx, my] = horseshoe ? centroidOf(wpts) : at((chosen.dS + chosen.dE) / 2);
+            if (horseshoe) {
+                // the drawn name is no longer over the road, so its own keep-out
+                // box has to be added — chosen.boxes traces the centreline
+                const hw = wordLen / 2;
+                occupied.push({
+                    x0: mx - Math.abs(dx * hw) - size * 0.6, y0: my - Math.abs(dy * hw) - size * 0.6,
+                    x1: mx + Math.abs(dx * hw) + size * 0.6, y1: my + Math.abs(dy * hw) + size * 0.6,
+                });
+            }
             let c = -wordLen / 2;
             for (let i = 0; i < chars.length; i++) {
                 const cc = c + advances[i] / 2;
                 if (chars[i] !== " ")
-                    glyphs.push(text(mx + dx * cc + nx * off, my + dy * cc + ny * off, chars[i], {
+                    glyphs.push(text(mx + dx * cc + nx * offS, my + dy * cc + ny * offS, chars[i], {
                         size, fill, family: FONTS.serif, italic, weight,
                         anchor: "middle", rotate: ang,
                     }));
@@ -2174,7 +2455,7 @@ function curvedRoadLabels(
         // Curvature-adaptive kerning: where the road bends toward the text side
         // (concave) the glyph tops converge, so widen the gap there by the arc the
         // bend eats up over the glyph height — letters never overlap on a bend.
-        const H = off + size * 0.78;
+        const H = Math.abs(offS) + size * 0.78;
         const baseCentres: number[] = [];
         let acc0 = 0;
         for (let i = 0; i < chars.length; i++) { baseCentres.push(acc0 + advances[i] / 2); acc0 += advances[i] + tracking; }
@@ -2197,8 +2478,8 @@ function curvedRoadLabels(
             const th = angAt(mid);
             const tx = Math.cos(th), ty = Math.sin(th);
             // baseline pushed off the centreline along the glyph's "up" normal
-            const gx = cx + ty * off;
-            const gy = cy - tx * off;
+            const gx = cx + ty * offS;
+            const gy = cy - tx * offS;
             if (chars[i] !== " ")
                 glyphs.push(text(gx, gy, chars[i], {
                     size, fill, family: FONTS.serif, italic, weight,
@@ -2253,6 +2534,56 @@ function computeMunicipalities(proj: Projection): MuniPlacement[] {
     });
 }
 
+/**
+ * Where a town's arrow should spring from when its index disc already sits on
+ * the side the arrow is heading — the disc's edge, just clear of the ring.
+ * Returns null when the disc is on another side, in which case the caller keeps
+ * the usual behaviour of clearing the whole label block.
+ *
+ * The badge's own geometry comes from badgePlacement, the same function that
+ * draws it, so the two cannot drift apart.
+ */
+function badgeOrigin(
+    badge: LabelBadge | undefined,
+    name: string,
+    cx: number,
+    cy: number,
+    facing: Pt
+): { cx: number; cy: number; r: number } | null {
+    if (!badge) return null;
+    const side = badge.side ?? "left";
+    const onTheWay =
+        side === "left" ? facing[0] < 0
+        : side === "right" ? facing[0] > 0
+        : side === "above" ? facing[1] < 0
+        : facing[1] > 0;
+    if (!onTheWay) return null;
+    const S = LABEL_STYLE.municipality;
+    // laid out exactly as drawMunicipalities does, so the two cannot drift
+    const adv = badgeAdvance({ size: S.size, badge });
+    const nameW = textWidth(name, S.size, S.tracking);
+    const left = cx - (nameW + adv) / 2;
+    const nameLeft = side === "left" ? left + adv : left;
+    const p = badgePlacement(S.size, nameLeft, nameW, cy + S.size * 0.34, badge);
+    return { cx: p.cx, cy: p.cy, r: p.r };
+}
+
+/**
+ * Centre of the letter a horizontal arrow heads towards — the first for an arrow
+ * running left, the last for one running right. Null for an arrow running mostly
+ * up or down, where no single letter is the one it leaves from.
+ */
+function leadingGlyphCentre(name: string, cx: number, cy: number, facing: Pt): Pt | null {
+    if (Math.abs(facing[0]) <= Math.abs(facing[1])) return null;
+    const S = LABEL_STYLE.municipality;
+    const chars = [...name];
+    if (!chars.length) return null;
+    const w = textWidth(name, S.size, S.tracking);
+    const leftward = facing[0] < 0;
+    const adv = charAdvance(leftward ? chars[0] : chars[chars.length - 1], "serif") * S.size;
+    return [leftward ? cx - w / 2 + adv / 2 : cx + w / 2 - adv / 2, cy];
+}
+
 /** A directional arrow whose head lands exactly on `to`. */
 function arrowMark(from: Pt, to: Pt): string {
     const dx = to[0] - from[0];
@@ -2292,6 +2623,9 @@ interface MuniLayout {
 }
 
 const DIST_SIZE = 8.5;
+
+/** Gap left between a town arrow's head and the map's border. */
+const ARROW_BORDER_PAD = 5;
 
 /** leftmost projected x of the city land in the lower half of the map (the west
  *  border of southern Toronto), used to centre the Mississauga label. */
@@ -2405,12 +2739,49 @@ function layoutMunicipalities(proj: Projection, munis: MuniPlacement[], occupied
             if (it.m.nudge) { cx += it.m.nudge[0]; cy += it.m.nudge[1]; }
             boxes.push(mkbox(cx, cy, it.w));
             cursor = along + half;
-            // arrow tip = where the ray from this label toward the town crosses the
-            // border, so the arrow line points straight at the town centre
-            const tip = clampToRect([cx, cy], it.m.target, f as Rect);
-            const u = unit([tip[0] - cx, tip[1] - cy]);
-            const alongName = Math.abs(u[0]) * (it.w / 2 + 4) + Math.abs(u[1]) * (halfH + 4);
-            const start: Pt = [cx + u[0] * alongName, cy + u[1] * alongName];
+            // Where the arrow leaves the label. Normally it clears the whole
+            // block, badge and name together. But when the badge is already on
+            // the side the arrow is heading — a left-hand badge on a town to the
+            // west — the disc is the natural place for the line to spring from,
+            // and starting from the far edge of the name instead leaves the
+            // arrow stranded on the wrong side of its own label. Burlington had
+            // it worst: pushed east to clear Oakville while its town lies
+            // west-southwest, its arrow came out a 22px stub under the label's
+            // own left edge, the shortest on the sheet by a third.
+            //
+            // The whole line is then re-struck from wherever it springs — tip
+            // included, since the border crossing depends on where the ray
+            // starts. Aiming from the label's centre and merely starting the
+            // line near the disc is not the same thing: the two are metres
+            // apart, so the drawn line misses the disc's centre and the arrow
+            // reads as not quite belonging to its own number.
+            const facing = unit([it.m.target[0] - cx, it.m.target[1] - cy]);
+            const disc = badgeOrigin(it.badge, it.name, cx, cy, facing);
+            // A town with no badge has no disc to spring from, so the leading
+            // letter stands in for one: the line is struck from the middle of
+            // that letter and drawn from there, the name's own halo covering the
+            // few pixels that fall under the glyph. Measuring a clearance off
+            // the ink instead left a visible gap between the arrow and the word.
+            const lead = disc ? null : leadingGlyphCentre(it.name, cx, cy, facing);
+            const from: Pt = disc ? [disc.cx, disc.cy] : lead ?? [cx, cy];
+            // stop the head short of the neatline rather than butting into it
+            const tip = clampToRect(from, it.m.target, {
+                x: f.x + ARROW_BORDER_PAD,
+                y: f.y + ARROW_BORDER_PAD,
+                w: f.w - ARROW_BORDER_PAD * 2,
+                h: f.h - ARROW_BORDER_PAD * 2,
+            });
+            const u = unit([tip[0] - from[0], tip[1] - from[1]]);
+            // clear of the disc's ring, or of the name's own ink — the block
+            // width carries padding the letters do not, and measuring the gap
+            // from that left the arrow floating well short of the first letter
+            const clear = disc
+                ? disc.r + 3
+                : lead
+                  ? 0
+                  : Math.abs(u[0]) * (textWidth(it.name, S.size, S.tracking) / 2 + badgeAdvance({ size: S.size, badge: it.badge }) + 5) +
+                    Math.abs(u[1]) * (halfH + 4);
+            const start: Pt = [from[0] + u[0] * clear, from[1] + u[1] * clear];
             // reserve the arrow so distance labels avoid it
             boxes.push({ x0: Math.min(start[0], tip[0]) - 2, y0: Math.min(start[1], tip[1]) - 2, x1: Math.max(start[0], tip[0]) + 2, y1: Math.max(start[1], tip[1]) + 2 });
             const distKm = haversineKm(proj.unproject([cx, cy]), it.m.at);
@@ -2831,7 +3202,7 @@ function drawInset(
         // Bishop) show a name only — neither gets a red/blue dot here.
         const noDot = d.name === "Union Station" || d.centeredLabel;
         if (!noDot && !coveredByFootprint(d.at))
-            dotCandidates.push({ name: d.name, p, col: d.kind === "water" ? PALETTE.accentBlue : PALETTE.accentRed });
+            dotCandidates.push({ name: d.name, p, col: PALETTE.accentRed });
         if (d.centeredLabel) {
             labelInputs.push(areaLabel(`ins:${d.name}`, d.name, p, {
                 badge: badgeFor(d.name),
@@ -2843,7 +3214,7 @@ function drawInset(
         labelInputs.push({
             id: `ins:${d.name}`, text: d.name, badge: badgeFor(d.name), anchor: p, kind: "point",
             size: 10, tracking: 0.1, fill: "#3a2c1c", family: FONTS.serif,
-            priority: d.kind === "water" ? 58 : 60, halo: PALETTE.paper, haloWidth: 2.4,
+            priority: 60, halo: PALETTE.paper, haloWidth: 2.4,
         });
     }
     const { placed } = placeLabels(labelInputs, panel, []);
@@ -3620,12 +3991,13 @@ function legendBox(r: Rect): string {
     out.push(text(x + w / 2, y + 21, "EXPLANATION", { size: 13, fill: PALETTE.ink, family: FONTS.display, tracking: 3, weight: 700 }));
     // The badge rows come first: they are now the primary marker on the sheet,
     // and they are the key to reading the index panel beside this box.
+    // in the order the index numbers them, so the legend reads as a key to the
+    // panel rather than as a second, differently-sorted list
     const rows: Array<[string, string]> = [
-        ["nbadge", "Neighbourhood — see index"],
-        ["lbadge", "Landmark — see index"],
-        ["pbadge", "Park — see index"],
-        ["tbadge", "Surrounding town — see index"],
-        ["swatch", "Former Borough"],
+        ["lbadge", "Landmark"],
+        ["nbadge", "Neighbourhood"],
+        ["pbadge", "Park"],
+        ["tbadge", "Surrounding town"],
         ["line", "Principal Street"],
         ["water", "Lake, River & Harbour"],
         ["depth", "Depth contour (metres)"],
@@ -3638,15 +4010,18 @@ function legendBox(r: Rect): string {
     let ry = first;
     for (const [kind, label] of rows) {
         const gx = x + 18;
-        if (kind === "swatch") out.push(el("rect", { x: gx, y: ry - 9, width: 18, height: 12, fill: PALETTE.regions["North York"], stroke: PALETTE.inkFaint, "stroke-width": 0.6 }));
-        else if (kind === "line") out.push(el("path", { d: `M ${gx} ${ry - 3} L ${gx + 18} ${ry - 3}`, stroke: PALETTE.inkSoft, "stroke-width": 2 }));
+        if (kind === "line") out.push(el("path", { d: `M ${gx} ${ry - 3} L ${gx + 18} ${ry - 3}`, stroke: PALETTE.inkSoft, "stroke-width": 2 }));
         else if (kind === "nbadge" || kind === "lbadge" || kind === "pbadge" || kind === "tbadge")
             // badgePlacement measures from the NAME's left edge, so hand it the
             // point that leaves the disc starting at gx + 2 as the row expects.
             // The disc is drawn a little smaller than the row, so the row's own
             // size goes separately — that is what the figure is centred against.
             out.push(indexBadge(rowSize * 0.92, gx + 2 + rowSize * 0.92 * 1.5, ry, {
-                label: kind === "nbadge" ? "7" : kind === "lbadge" ? "49" : kind === "pbadge" ? "72" : "MI",
+                label:
+                    kind === "lbadge" ? "4"
+                    : kind === "nbadge" ? "23"
+                    : kind === "pbadge" ? "72"
+                    : "MI",
                 color:
                     kind === "lbadge" ? PALETTE.accentRed
                     : kind === "pbadge" ? PALETTE.parkLabel

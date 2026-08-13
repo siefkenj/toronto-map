@@ -58,9 +58,11 @@ export const NEIGHBOURHOODS: PlaceLabel[] = [
     { name: "Cabbagetown", at: [-79.366, 43.667], badge: "left" },
     { name: "Regent Park", at: [-79.362, 43.66], badge: "left" },
     { name: "St. James Town", at: [-79.372, 43.669], badge: "left" },
-    // nudged south off Regent Park: with the badge above the name, the disc
-    // reaches up into "Regent Park" from the old anchor.
-    { name: "Corktown", at: [-79.361, 43.6532], priority: 62, badge: "above" },
+    // Nudged south off Regent Park, and ranked above THE PORT LANDS: that
+    // district label reaches over Corktown's own corner, and while it held the
+    // ground Corktown could not pin, so the disc floated ~250 m north of the
+    // neighbourhood onto Queen Street.
+    { name: "Corktown", at: [-79.361, 43.6532], priority: 76, badge: "below" },
     { name: "Villiers Island", at: [-79.3535, 43.646], priority: 76, badge: "below" },
     { name: "The Annex", at: [-79.404, 43.668], badge: "left" },
     // Trinity–Bellwoods is not here: neighbourhood and park share a name and a
@@ -114,28 +116,24 @@ export const LANDMARKS: Landmark[] = [
     { name: "CN Tower", at: [-79.3871, 43.6426], kind: "icon", badge: "left" },
     { name: "Rogers Centre", at: [-79.3894, 43.6416], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Scotiabank Arena", at: [-79.3791, 43.6435], kind: "icon", insetOnly: true, badge: "left" },
-    { name: "Ripley's Aquarium", at: [-79.3866, 43.6422], kind: "icon", insetOnly: true, badge: "left" },
     { name: "City Hall & Nathan Phillips Sq.", at: [-79.3837, 43.653], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Old City Hall", at: [-79.3817, 43.6525], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Union Station", at: [-79.3804, 43.6453], kind: "icon", badge: "left" },
     { name: "Casa Loma", at: [-79.4094, 43.678], kind: "icon", badge: "left" },
     { name: "Royal Ontario Museum", at: [-79.3948, 43.6677], kind: "icon", badge: "left" },
-    { name: "Art Gallery of Ontario", at: [-79.3925, 43.6536], kind: "icon", insetOnly: true, badge: "left" },
     { name: "St. Lawrence Market", at: [-79.3716, 43.6487], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Eaton Centre", at: [-79.3807, 43.6544], kind: "icon", insetOnly: true, badge: "left" },
-    { name: "Sankofa Square", at: [-79.3804, 43.6559], kind: "icon", insetOnly: true, badge: "left" },
+    { name: "Sankofa Square (Yonge–Dundas)", at: [-79.3804, 43.6559], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Queen's Park", at: [-79.3916, 43.6622], kind: "icon", badge: "left" },
     { name: "Hockey Hall of Fame", at: [-79.3777, 43.6473], kind: "icon", insetOnly: true, badge: "left" },
     { name: "Fort York", at: [-79.4042, 43.6392], kind: "icon", badge: "left" },
     { name: "Exhibition Place", at: [-79.4156, 43.6335], kind: "icon", badge: "left" },
-    { name: "Evergreen Brick Works", at: [-79.3647, 43.6843], kind: "icon", badge: "left" },
-    // Waterfront & islands
-    { name: "Toronto Islands", at: [-79.373, 43.6205], kind: "water", centeredLabel: true, badge: "left" },
-    { name: "Billy Bishop Airport", at: [-79.3945, 43.6289], kind: "water", centeredLabel: true, badge: "above" },
-    { name: "Harbourfront Centre", at: [-79.3819, 43.6388], kind: "water", insetOnly: true, badge: "left" },
-    { name: "Ontario Place", at: [-79.415, 43.628], kind: "water", badge: "left" },
-    { name: "Sunnyside Beach", at: [-79.457, 43.6374], kind: "water", badge: "left" },
-    { name: "Woodbine Beach", at: [-79.3071, 43.6618], kind: "water", badge: "left" },
+    // Waterfront, but landmarks like any other: the sheet carries two badged
+    // series, parks and landmarks, and a built attraction on the water is still
+    // a built attraction. The beaches and the islands went to the parks.
+    { name: "Billy Bishop Airport", at: [-79.3945, 43.6289], kind: "icon", centeredLabel: true, badge: "above" },
+    { name: "Harbourfront Centre", at: [-79.3819, 43.6388], kind: "icon", insetOnly: true, badge: "left" },
+    { name: "Ontario Place", at: [-79.415, 43.628], kind: "icon", badge: "left" },
 ];
 
 /**
@@ -145,6 +143,13 @@ export const LANDMARKS: Landmark[] = [
  */
 export interface Municipality extends PlaceLabel {
     group: "West" | "North" | "East";
+    /**
+     * Name the town on the map but keep it out of the SURROUNDING TOWNS panel.
+     * Used for the far cities, which are here to give the sheet its bearings
+     * rather than to be looked up — and, having no panel entry, they are drawn
+     * without an index letter, since that circle is a promise the panel keeps.
+     */
+    unlisted?: boolean;
 }
 
 // The hand nudges these once carried were measured against the old, much taller
@@ -166,12 +171,21 @@ export const MUNICIPALITIES: Municipality[] = [
     { name: "Aurora", at: [-79.47, 44.0], group: "North", badge: "left" },
     { name: "Newmarket", at: [-79.46, 44.06], group: "North", badge: "left" },
     { name: "King City", at: [-79.53, 43.93], group: "North", badge: "left" },
-    // East (Durham)
-    { name: "Pickering", at: [-79.09, 43.84], group: "East", badge: "left" },
-    { name: "Ajax", at: [-79.02, 43.85], group: "East", badge: "left" },
-    { name: "Whitby", at: [-78.94, 43.9], group: "East", badge: "left" },
-    { name: "Oshawa", at: [-78.86, 43.9], group: "East", badge: "left" },
-    { name: "Markham", at: [-79.26, 43.87], group: "East", badge: "left" },
+    // East (Durham). Their discs sit on the RIGHT of the name: that is the side
+    // their arrows leave from, so the number and its line read as one mark
+    // rather than the arrow setting off from behind the word.
+    { name: "Pickering", at: [-79.09, 43.84], group: "East", badge: "right" },
+    { name: "Ajax", at: [-79.02, 43.85], group: "East", badge: "right" },
+    { name: "Whitby", at: [-78.94, 43.9], group: "East", badge: "right" },
+    { name: "Oshawa", at: [-78.86, 43.9], group: "East", badge: "right" },
+    { name: "Markham", at: [-79.26, 43.87], group: "East", badge: "right" },
+    // Beyond the commuter belt: named on the sheet for orientation, absent from
+    // the panel (see `unlisted`). Kitchener-Waterloo is given at the midpoint of
+    // the two downtowns, the pair being one place to a reader at this distance.
+    // Anchored south of the two downtowns so its margin label clears the Pearson
+    // diagram, which the true midpoint put it straight across.
+    { name: "Kitchener–Waterloo", at: [-80.5065, 43.408], group: "West", unlisted: true },
+    { name: "Ottawa", at: [-75.6972, 45.4215], group: "East", unlisted: true },
 ];
 
 /**
@@ -192,8 +206,10 @@ export const FERRY_ROUTES: Array<[LonLat, LonLat]> = [
  * drawn from dissolved OSM polygons (which lose their names in the union), so
  * these label points are carried separately — each is the real centroid of the
  * OSM feature, and only parks whose centroid falls inside the map frame are
- * listed. Parks already named elsewhere (High Park, Tommy Thompson Park via the
- * neighbourhood list; Evergreen Brick Works via the landmarks) are omitted.
+ * listed. Evergreen Brick Works is here rather than among the landmarks: what
+ * the sheet marks is the restored brickworks, but it is green space and reads as
+ * such. High Park and Tommy Thompson Park moved here from the neighbourhood list
+ * for the same reason.
  */
 export interface ParkLabel extends PlaceLabel {
     /**
@@ -219,12 +235,27 @@ export const PARK_LABELS: ParkLabel[] = [
     // and the reason this list is not simply the largest green spaces.
     { name: "Christie Pits Park", at: [-79.4210, 43.6647], indexed: true, badge: "below" },
     { name: "Allan Gardens", at: [-79.3744, 43.6619], indexed: true, badge: "left", priority: 62 },
-    { name: "Riverdale Park", at: [-79.3561, 43.6700], indexed: true, badge: "left" },
+    // ranked over the neighbouring parks: with the discs pinned to their
+    // features the Don valley got tight enough that Riverdale lost its name
+    // and was left as a bare number.
+    { name: "Riverdale Park", at: [-79.3561, 43.6700], indexed: true, priority: 61, badge: "left" },
+    // The site, not the parkland: the City's Don Valley Brick Works Park is a
+    // separate feature 270 m northwest. The point is the restored brickworks.
+    { name: "Evergreen Brick Works", at: [-79.3647, 43.6843], indexed: true, badge: "left" },
     { name: "Dufferin Grove Park", at: [-79.4325, 43.6562], indexed: true, badge: "below" },
     // Named but not indexed: downtown has no room for another name here, and
     // taking it costs Union Station its own (the index check catches the trade).
     { name: "Corktown Common", at: [-79.3525, 43.6540] },
     { name: "Cherry Beach", at: [-79.3438, 43.6370], indexed: true, badge: "below" },
+    // Beaches and the islands: green space you can walk in, so they read as
+    // parks. These were a third, blue "waterfront" series until it was folded
+    // into these two.
+    { name: "Toronto Islands", at: [-79.373, 43.6205], indexed: true, badge: "left" },
+    // anchored on the sand: the OSM node of that name is a bike dock set back
+    // from the water, and with the disc pinned to its point the badge sat inland
+    { name: "Hanlan's Point Beach", at: [-79.394, 43.6194], indexed: true, badge: "right" },
+    { name: "Sunnyside Beach", at: [-79.457, 43.6374], indexed: true, badge: "left" },
+    { name: "Woodbine Beach", at: [-79.3071, 43.6618], indexed: true, badge: "left" },
     // Each of these three is a neighbourhood name as well as a park; the sheet
     // carries it once, here, rather than twice with two numbers.
     { name: "Trinity Bellwoods Park", at: [-79.4148, 43.6477], indexed: true, badge: "right" },

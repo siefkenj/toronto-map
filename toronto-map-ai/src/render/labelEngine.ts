@@ -185,13 +185,10 @@ const PAD = 1.9;
 
 /**
  * Clearance beyond this counts as "open paper" — past it, one pinned side is no
- * roomier than another in any way a reader would notice, and the side set in the
- * data should decide. PREFERRED_SIDE_BONUS is what that stated preference is
- * worth in pixels of clearance: enough to hold a near-tie, not enough to keep a
- * name in a crowd when another side has real room.
+ * roomier than another in any way a reader would notice. Only consulted when the
+ * side named in the data is blocked outright.
  */
 const MAX_CLEARANCE = 24;
-const PREFERRED_SIDE_BONUS = 6;
 
 /**
  * Advance width of one character in em, for `face` ("serif" | "italic" |
@@ -423,26 +420,33 @@ export function placeLabels(
 
             // The pinned candidates all put the disc on the same point, so they
             // are not a preference order but a choice of which way the name
-            // hangs off it. Take the one standing clearest of its neighbours
-            // rather than the first that merely fits — that is what keeps the
-            // name out of the surrounding labels, and it leaves the most room
-            // for whatever is placed after. The side set in the data still wins
-            // ties and near-ties, so hand-chosen sides are not quietly undone.
+            // hangs off it.
+            //
+            // The side named in the data wins outright whenever it fits: these
+            // are set per place by hand, and a placement that fits already
+            // overlaps nothing, so there is no case where overruling one buys
+            // the reader anything. Only when that side is blocked does the
+            // engine choose, and then it takes the one standing clearest of its
+            // neighbours rather than the first that merely fits — which keeps
+            // the name out of the crowd and leaves the most room for whatever
+            // is placed after it.
             const pinned = cands
                 .filter((c) => c.badgeSide)
                 .map((c) => ({ c, box: fits(c) }))
                 .filter((z): z is { c: Candidate; box: Box } => z.box !== null);
             if (pinned.length) {
                 const preferred = cand.badge?.side ?? "left";
-                let best = pinned[0];
-                let bestScore = -Infinity;
-                for (const z of pinned) {
-                    let clear = MAX_CLEARANCE;
-                    for (const b of boxes) clear = Math.min(clear, boxGap(z.box, b));
-                    const score = clear + (z.c.badgeSide === preferred ? PREFERRED_SIDE_BONUS : 0);
-                    if (score > bestScore) {
-                        bestScore = score;
-                        best = z;
+                const asAsked = pinned.find((z) => z.c.badgeSide === preferred);
+                let best = asAsked ?? pinned[0];
+                if (!asAsked) {
+                    let bestClear = -Infinity;
+                    for (const z of pinned) {
+                        let clear = MAX_CLEARANCE;
+                        for (const b of boxes) clear = Math.min(clear, boxGap(z.box, b));
+                        if (clear > bestClear) {
+                            bestClear = clear;
+                            best = z;
+                        }
                     }
                 }
                 boxes.push(best.box);

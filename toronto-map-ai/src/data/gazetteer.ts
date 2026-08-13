@@ -6,10 +6,11 @@
  * the ground the numbered places stand on. The rest is two badged series, each
  * keyed by a badge drawn beside the name on the map:
  *
- *  - Neighbourhoods and landmarks take running numbers 1…n. Numbering is
- *    neighbourhoods first, in the geographic order they are declared in
- *    ./places, then landmarks — so a reader scanning the panel moves roughly
- *    west-to-east through the city before arriving at the sights.
+ *  - Landmarks, neighbourhoods and the indexed parks take one run of numbers,
+ *    1…n, but each kind keeps its own block of that run in the order below, so
+ *    a number still says which series a place belongs to and the panel reads as
+ *    three lists rather than one shuffled one. Inside a block the order spirals
+ *    outward from the CN Tower — see numberedSeries.
  *  - Surrounding municipalities take initials instead. They are a different
  *    kind of thing (places off the edge of the map, pointed at rather than
  *    drawn), a letter is self-evidently not part of the numbered run, and the
@@ -20,9 +21,9 @@
  * `text` otherwise so a missing short form degrades instead of blanking the row.
  */
 import { DESCRIPTIONS } from "./descriptions";
-import { LANDMARKS, MUNICIPALITIES, NEIGHBOURHOODS, PARK_LABELS, type BadgeSide } from "./places";
+import { LANDMARKS, MUNICIPALITIES, NEIGHBOURHOODS, PARK_LABELS, type BadgeSide, type LonLat } from "./places";
 
-export type GazetteerKind = "neighbourhood" | "landmark" | "waterfront" | "park" | "municipality" | "borough";
+export type GazetteerKind = "neighbourhood" | "landmark" | "park" | "municipality" | "borough";
 
 export interface GazetteerEntry {
     /** what is set inside the badge: "17" for the numbered series, "MI" for towns */
@@ -46,33 +47,134 @@ function blurbFor(name: string): string {
 /** The parks that carry a dot and an index entry, in the order they are declared. */
 export const INDEXED_PARKS = PARK_LABELS.filter((p) => p.indexed);
 
-/** The numbered series: everything drawn inside the map frame. */
-export const GAZETTEER: GazetteerEntry[] = [
-    ...NEIGHBOURHOODS.map((d, i) => ({
+/** Great-circle distance between two [lon, lat] points, kilometres. */
+function haversineKm(a: LonLat, b: LonLat): number {
+    const R = 6371;
+    const rad = (d: number) => (d * Math.PI) / 180;
+    const dLat = rad(b[1] - a[1]);
+    const dLon = rad(b[0] - a[0]);
+    const h =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(rad(a[1])) * Math.cos(rad(b[1])) * Math.sin(dLon / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+/** Initial compass bearing a → b, degrees clockwise from true north. */
+function bearingDeg(a: LonLat, b: LonLat): number {
+    const rad = (d: number) => (d * Math.PI) / 180;
+    const dLon = rad(b[0] - a[0]);
+    const y = Math.sin(dLon) * Math.cos(rad(b[1]));
+    const x =
+        Math.cos(rad(a[1])) * Math.sin(rad(b[1])) -
+        Math.sin(rad(a[1])) * Math.cos(rad(b[1])) * Math.cos(dLon);
+    return ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+}
+
+/**
+ * Widths of the first and last ring, in kilometres.
+ *
+ * The rings widen outward because the places do: the core packs dozens of them
+ * into the first two kilometres, and past the old city they thin out to one
+ * every few. Rings of one fixed width would either slice the core so finely that
+ * the ordering is pure distance, or lump half the sheet into one ring.
+ */
+const RING_FIRST_KM = 0.2;
+const RING_LAST_KM = 2;
+
+/**
+ * Outer radius of each ring, in kilometres, out to `maxKm`.
+ *
+ * Widths grow geometrically from RING_FIRST_KM, and the ratio is solved so the
+ * outermost ring comes out at RING_LAST_KM rather than being fixed in advance —
+ * so the ring scheme stretches to fit however far the farthest place happens to
+ * be, instead of running out of rings or overshooting when that changes.
+ */
+function ringEdges(maxKm: number): number[] {
+    const K = RING_LAST_KM / RING_FIRST_KM;
+    // sum(first·rⁱ) = maxKm together with first·r^(n-1) = last gives r directly
+    const denom = RING_FIRST_KM * K - maxKm;
+    const r = denom < 0 ? (RING_FIRST_KM - maxKm) / denom : 1;
+    const edges: number[] = [];
+    let w = RING_FIRST_KM;
+    let acc = 0;
+    // the guard is a backstop against a pathological ratio, not a real bound
+    while (acc < maxKm && edges.length < 500) {
+        acc += Math.min(w, RING_LAST_KM);
+        edges.push(acc);
+        w *= r;
+    }
+    return edges;
+}
+
+/**
+ * The kinds of the numbered run, and the order their blocks appear in — which is
+ * the order of the badge colours: red, then the neighbourhood wash, then blue,
+ * then green. Landmarks lead so the CN Tower, which the numbering spirals out
+ * from, comes out as 1.
+ */
+const SERIES_ORDER: GazetteerKind[] = ["landmark", "neighbourhood", "park"];
+
+/**
+ * The numbered series: everything drawn inside the map frame.
+ *
+ * One run of numbers, but the kinds do not interleave — each takes a block of
+ * the run, in SERIES_ORDER. Inside a block the order spirals out from the CN
+ * Tower: places are sorted into rings around it (see ringEdges) and, within a
+ * ring, taken clockwise from due west, so consecutive numbers are neighbours on
+ * the sheet and a reader who has found one badge can guess where the next lies.
+ * Bearings are true, not screen: the sheet is rotated to bring the street grid
+ * square, and a reader asking "what is west of here" means the city's west
+ * either way.
+ *
+
+ * Only the flagged parks are here: the map names many more green spaces than it
+ * numbers, and a dot is a promise that the panel has something to say about the
+ * place (see ParkLabel.indexed).
+ */
+function numberedSeries(): GazetteerEntry[] {
+    const raw = [
+        ...NEIGHBOURHOODS.map((d) => ({ d, kind: "neighbourhood" as GazetteerKind })),
+        ...LANDMARKS.map((d) => ({ d, kind: "landmark" as GazetteerKind })),
+        ...INDEXED_PARKS.map((d) => ({ d, kind: "park" as GazetteerKind })),
+    ];
+    const origin = LANDMARKS.find((d) => d.name === ORIGIN_NAME)?.at;
+    if (!origin) throw new Error(`${ORIGIN_NAME} not found in LANDMARKS — it is the origin of the numbering`);
+
+    const withGeom = raw.map((e) => ({ ...e, km: haversineKm(origin, e.d.at), bearing: bearingDeg(origin, e.d.at) }));
+    // rings are measured over the whole set, so a ring means the same distance
+    // from the tower in every block
+    const edges = ringEdges(Math.max(...withGeom.map((e) => e.km)));
+    const ringOf = (km: number) => {
+        const i = edges.findIndex((edge) => km <= edge);
+        return i < 0 ? edges.length : i;
+    };
+    // clockwise from due west: W → N → E → S, which is bearing 270 → 0 → 90 → 180
+    const clockwise = (bearing: number) => (bearing - 270 + 360) % 360;
+
+    const ordered = withGeom.sort((a, b) => {
+        const ka = SERIES_ORDER.indexOf(a.kind);
+        const kb = SERIES_ORDER.indexOf(b.kind);
+        if (ka !== kb) return ka - kb;
+        if (a.d.name === ORIGIN_NAME) return -1;
+        if (b.d.name === ORIGIN_NAME) return 1;
+        const ra = ringOf(a.km);
+        const rb = ringOf(b.km);
+        return ra !== rb ? ra - rb : clockwise(a.bearing) - clockwise(b.bearing);
+    });
+
+    return ordered.map((e, i) => ({
         label: String(i + 1),
-        name: d.name,
-        kind: "neighbourhood" as const,
-        side: d.badge,
-        blurb: blurbFor(d.name),
-    })),
-    ...LANDMARKS.map((d, i) => ({
-        label: String(NEIGHBOURHOODS.length + i + 1),
-        name: d.name,
-        kind: (d.kind === "water" ? "waterfront" : "landmark") as GazetteerKind,
-        side: d.badge,
-        blurb: blurbFor(d.name),
-    })),
-    // Parks come last in the run. Only the flagged ones are here: the map names
-    // many more green spaces than it numbers, and a dot is a promise that the
-    // panel has something to say about the place (see ParkLabel.indexed).
-    ...INDEXED_PARKS.map((d, i) => ({
-        label: String(NEIGHBOURHOODS.length + LANDMARKS.length + i + 1),
-        name: d.name,
-        kind: "park" as const,
-        side: d.badge,
-        blurb: blurbFor(d.name),
-    })),
-];
+        name: e.d.name,
+        kind: e.kind,
+        side: e.d.badge,
+        blurb: blurbFor(e.d.name),
+    }));
+}
+
+/** The place the numbering spirals out from, and so always number 1. */
+const ORIGIN_NAME = "CN Tower";
+
+export const GAZETTEER: GazetteerEntry[] = numberedSeries();
 
 /**
  * Codes for the surrounding towns: the initial alone wherever that is
@@ -181,7 +283,7 @@ function popLabel(n: number): string {
  * The lettered series: the towns ringing the map, ordered by their code so a
  * reader who has spotted a circle on the sheet can run down the column to it.
  */
-export const TOWNS: GazetteerEntry[] = MUNICIPALITIES.map((m) => ({
+export const TOWNS: GazetteerEntry[] = MUNICIPALITIES.filter((m) => !m.unlisted).map((m) => ({
     label: TOWN_CODES[m.name] ?? m.name.slice(0, 2).toUpperCase(),
     name: m.name,
     kind: "municipality" as const,
