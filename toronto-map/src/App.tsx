@@ -1,6 +1,5 @@
 import type { MultiPolygon, Polygon } from "geojson";
 import "./App.css";
-import torontoLevel8 from "./assets/toronto-level-8.geojson.json";
 import torontoLevel8Simp from "./assets/toronto-level-8-simp.geojson.json";
 import torontoLevel10 from "./assets/toronto-level-10.geojson.json";
 import React from "react";
@@ -34,9 +33,8 @@ const TORONTO_BOUNDS = {
     west: -79.62,
 } as const;
 
-// Calculate width and height in degrees
+// Calculate width in degrees
 const width = TORONTO_BOUNDS.east - TORONTO_BOUNDS.west;
-const height = TORONTO_BOUNDS.north - TORONTO_BOUNDS.south;
 
 const pixH = 1080;
 const pixW = 1920;
@@ -45,20 +43,11 @@ const latScale = 111; // Every degree of latitude is about 111 km
 const cityRot = 16; // Rotate away from true north by 14 degrees
 const zoom = pixW / (width * longScale) / 1.3;
 
-const mapTransform = `translate(50 ${pixH}) scale(${zoom}) rotate(${cityRot}) scale(${longScale} ${-latScale}) translate(${-TORONTO_BOUNDS.west} ${-TORONTO_BOUNDS.south})`;
 const matTransform = Mat.translate(-TORONTO_BOUNDS.west, -TORONTO_BOUNDS.south)
     .scale(longScale, -latScale)
     .rotate(cityRot)
     .scale(zoom, zoom)
     .translate(80, pixH);
-const mapInverseTransform = `translate(${TORONTO_BOUNDS.west} ${
-    TORONTO_BOUNDS.south
-}) scale(${1 / longScale} ${1 / -latScale}) rotate(${-cityRot}) scale(${
-    1 / zoom
-}) translate(${-50} ${-pixH})`;
-const mapPartialInverseTransform = `scale(${1 / longScale} ${
-    1 / -latScale
-}) rotate(${-cityRot}) scale(${1 / zoom}) translate(${-50} ${-pixH})`;
 
 /**
  * Convert longitude/latitude bounding box to pixel size.
