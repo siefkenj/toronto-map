@@ -1,4 +1,4 @@
-import type { Feature, Geometry, Polygon } from "geojson";
+import type { Feature, Polygon } from "geojson";
 import torontoWater from "./assets/toronto-water.geojson.json";
 
 // Find Lake Ontario in the Toronto water data
